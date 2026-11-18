@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">JumpAssist</string>
+    <string name="accessibility_service_description">Dispatches timed press-and-hold touch gestures on screen for JumpAssist automated jump calibration and testing.</string>
+    <string name="notification_channel_name">JumpAssist Capture Service</string>
+    <string name="notification_title">Screen Vision Active</string>
+    <string name="notification_text">Analyzing frame distances for touch duration automation.</string>
+</resources>

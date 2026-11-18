@@ -1,0 +1,8 @@
+{
+  "name": "Remix JumpBot Auto-Play",
+  "description": "An Android accessibility tool that measures block distances to automate precise jumps in arcade games.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
