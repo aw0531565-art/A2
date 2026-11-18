@@ -188,8 +188,11 @@ object JumpTrainer {
         val isMiniBlock = targetProfile == "MINI"
         val isSpecialtyContext = targetProfile != "MEDIUM" ||
             (pawnStance != "CENTER" && pawnStance != "UNKNOWN")
+        val singlePointOffCenter = !isFatalOut && scoreDelta == 1
         val globalShare = when {
+            isMiniBlock && singlePointOffCenter -> 0.12f
             isMiniBlock -> 0.18f
+            isSpecialtyContext && singlePointOffCenter -> 0.22f
             isSpecialtyContext -> 0.35f
             else -> 1.0f
         }
@@ -204,7 +207,6 @@ object JumpTrainer {
         val mKey = mistakeKey(targetProfile, pawnStance, dNorm)
 
         val comboConfirmed = !isFatalOut && scoreDelta != null && scoreDelta >= 2
-        val singlePointOffCenter = !isFatalOut && scoreDelta == 1
 
         when {
             comboConfirmed -> {
@@ -320,7 +322,7 @@ object JumpTrainer {
 
             landingRatio != null && landingRatio in 0.72f..1.65f -> {
                 val errorRatio = 1.0f - landingRatio
-                val deadCenterTol = if (singlePointOffCenter) 0.008f else 0.025f
+                val deadCenterTol = if (singlePointOffCenter) 0.012f else 0.025f
                 if (abs(errorRatio) <= deadCenterTol) {
                     if (singlePointOffCenter) {
                         note = String.format(Locale.US, "Edge +1pt (r=%.2f)", landingRatio)
@@ -387,7 +389,8 @@ object JumpTrainer {
 
             if (isShortBand && !isFatalOut && landingRatio != null) {
                 val curDist = newBiases[dKey] ?: 0f
-                newBiases[dKey] = (curDist + learnedErrorMs * 0.50f).coerceIn(-55f, 35f)
+                val distMin = if (dKey == "DIST:NEAR270") -22f else -38f
+                newBiases[dKey] = (curDist + learnedErrorMs * 0.50f).coerceIn(distMin, 18f)
             }
             val distAtten = if (isShortBand && !isFatalOut) 0.55f else 1.0f
 

@@ -837,6 +837,82 @@ class BlockVisionAnalyzerTest {
         )
         assertTrue("Target block should be detected", result.blockFound)
     }
+
+    @Test
+    fun `ignores warm yellow-orange block and dark indigo deck below pawn feet`() {
+        val w = 720
+        val h = 1600
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+
+        // Case 1: Bright warm orange/gold source deck (#FFB369 / #F5D47B) directly under pawn feet (y=925..1005)
+        val warmBmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        val warmCanvas = android.graphics.Canvas(warmBmp)
+        warmCanvas.drawColor(android.graphics.Color.rgb(0x47, 0x54, 0x91))
+
+        val px = 465f
+        val py = 925f
+        val deckPath = android.graphics.Path().apply {
+            moveTo(px, py - 45f); lineTo(px + 100f, py + 5f); lineTo(px, py + 55f); lineTo(px - 100f, py + 5f); close()
+        }
+        paint.color = android.graphics.Color.rgb(0xFF, 0xB3, 0x69)
+        warmCanvas.drawPath(deckPath, paint)
+        paint.color = android.graphics.Color.rgb(0xD0, 0x6F, 0x43)
+        warmCanvas.drawRect(px - 95f, py + 20f, px + 95f, py + 85f, paint)
+
+        // Pawn standing at (465, 925)
+        paint.color = android.graphics.Color.rgb(0x3E, 0x33, 0x53)
+        warmCanvas.drawOval(px - 15f, py - 18f, px + 15f, py - 3f, paint)
+        warmCanvas.drawRect(px - 10f, py - 52f, px + 10f, py - 12f, paint)
+        paint.color = android.graphics.Color.rgb(210, 175, 98)
+        warmCanvas.drawOval(px - 12f, py - 60f, px + 12f, py - 50f, paint)
+        paint.color = android.graphics.Color.rgb(0x3E, 0x33, 0x53)
+        warmCanvas.drawCircle(px, py - 72f, 12f, paint)
+
+        // Target block up-left
+        val bx = 255f
+        val by = 803f
+        val targetPath = android.graphics.Path().apply {
+            moveTo(bx, by - 48f); lineTo(bx + 96f, by); lineTo(bx, by + 48f); lineTo(bx - 96f, by); close()
+        }
+        paint.color = android.graphics.Color.rgb(245, 245, 245)
+        warmCanvas.drawPath(targetPath, paint)
+
+        val warmRes = BlockVisionAnalyzer.analyze(warmBmp, BotConfig(roiTopFraction = 0.28f, roiBottomFraction = 0.72f))
+        warmBmp.recycle()
+
+        assertTrue("Pawn should be detected on warm orange-gold deck", warmRes.pawnFound)
+        assertTrue(
+            "Warm block deck below pawn must NOT pull collar/base down to ~985; got ${warmRes.pawnBaseY}",
+            warmRes.pawnBaseY in 908f..942f
+        )
+
+        // Case 2: Dark indigo #363C66 deck matching pawn tolerance directly below pawn feet (#269/#300)
+        val darkBmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        val darkCanvas = android.graphics.Canvas(darkBmp)
+        darkCanvas.drawColor(android.graphics.Color.rgb(0x47, 0x54, 0x91))
+        paint.color = android.graphics.Color.rgb(0x36, 0x3C, 0x66)
+        darkCanvas.drawRect(px - 52f, py - 2f, px + 52f, py + 82f, paint)
+
+        paint.color = android.graphics.Color.rgb(0x3E, 0x33, 0x53)
+        darkCanvas.drawOval(px - 15f, py - 18f, px + 15f, py - 3f, paint)
+        darkCanvas.drawRect(px - 10f, py - 52f, px + 10f, py - 12f, paint)
+        paint.color = android.graphics.Color.rgb(210, 175, 98)
+        darkCanvas.drawOval(px - 12f, py - 60f, px + 12f, py - 50f, paint)
+        paint.color = android.graphics.Color.rgb(0x3E, 0x33, 0x53)
+        darkCanvas.drawCircle(px, py - 72f, 12f, paint)
+
+        paint.color = android.graphics.Color.rgb(245, 245, 245)
+        darkCanvas.drawPath(targetPath, paint)
+
+        val darkRes = BlockVisionAnalyzer.analyze(darkBmp, BotConfig(roiTopFraction = 0.28f, roiBottomFraction = 0.72f))
+        darkBmp.recycle()
+
+        assertTrue("Pawn should be detected on #363C66 dark deck", darkRes.pawnFound)
+        assertTrue(
+            "Wide #363C66 block below pawn must NOT pull pawnBaseY down to ~1005; got ${darkRes.pawnBaseY}",
+            darkRes.pawnBaseY in 908f..945f
+        )
+    }
 }
 
 

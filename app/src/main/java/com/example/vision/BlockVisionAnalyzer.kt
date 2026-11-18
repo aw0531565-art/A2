@@ -201,10 +201,14 @@ object BlockVisionAnalyzer {
         val pawnTopY = p05Y.toFloat()
         val observedHeight = (p95Y - p05Y).toFloat()
         val expectedPawnHeight = width * 0.164f
+        val compactPawnPixelMax = max(1400, (width * height * 0.0012f).roundToInt())
         val coneVisibleBelowCollar = pawn.collarHits >= 3 &&
             pawn.collarCenterY > 0f &&
-            (p95Y - pawn.collarCenterY) >= (width * 0.052f)
-        val isBottomOccluded = !coneVisibleBelowCollar && observedHeight < expectedPawnHeight * 0.72f
+            (p95Y - pawn.collarCenterY) >= (width * 0.050f)
+        val isBottomOccluded = !coneVisibleBelowCollar && (
+            (pawn.collarHits >= 3 && pawn.collarCenterY > 0f && observedHeight < width * 0.125f) ||
+                (observedHeight < width * 0.105f && pawn.xs.size < compactPawnPixelMax)
+            )
         val pawnBaseY = if (isBottomOccluded) {
             // Pawn lower cone is genuinely occluded behind a tall foreground block (e.g., roof/chest);
             // project true resting foot from the golden collar or head top.
@@ -721,27 +725,54 @@ object BlockVisionAnalyzer {
             if (compW > width * 0.14f) continue
             if (compW > compH * 1.6f && compW > width * 0.08f) continue
 
-            // Check for warm gold collar signature near this component
+            // Check for compact warm gold collar signature in the upper body band only (never scan below feet)
             var collarHits = 0
+            var collarSumX = 0L
             var collarSumY = 0L
             val scanMinX = (minX - 6).coerceIn(marginX, width - marginX - 1)
             val scanMaxX = (maxX + 6).coerceIn(marginX, width - marginX - 1)
-            val scanMinY = (minY - roiTop - 10).coerceIn(0, roiHeight - 1)
-            val scanMaxY = (maxY - roiTop + 28).coerceIn(0, roiHeight - 1)
+            val scanMinY = (minY - roiTop - (width * 0.018f).roundToInt()).coerceIn(0, roiHeight - 1)
+            val upperBandLimitY = minY - roiTop + (width * 0.086f).roundToInt()
+            val aboveFootLimitY = maxY - roiTop - (width * 0.020f).roundToInt()
+            val scanMaxY = if (compH < (width * 0.115f).roundToInt()) {
+                min(maxY - roiTop + 26, upperBandLimitY).coerceIn(scanMinY, roiHeight - 1)
+            } else {
+                min(aboveFootLimitY, upperBandLimitY).coerceIn(scanMinY, roiHeight - 1)
+            }
+            val maxCollarRowSpan = (width * 0.075f).roundToInt()
+            val outerPad = max(6, (width * 0.012f).roundToInt())
+            fun isGoldCollarRgb(px: Int): Boolean {
+                val r = (px shr 16) and 0xFF
+                val g = (px shr 8) and 0xFF
+                val b = px and 0xFF
+                return r > 160 && g > 115 && b < 130 && (r - b) > 50
+            }
             var cy = scanMinY
             while (cy <= scanMaxY) {
                 val rowOff = cy * width
+                var rowHits = 0
+                var rowMinGx = Int.MAX_VALUE
+                var rowMaxGx = Int.MIN_VALUE
+                var rowSumX = 0L
                 var cx = scanMinX
                 while (cx <= scanMaxX) {
-                    val px = pixels[rowOff + cx]
-                    val r = (px shr 16) and 0xFF
-                    val g = (px shr 8) and 0xFF
-                    val b = px and 0xFF
-                    if (r > 160 && g > 115 && b < 130 && (r - b) > 50) {
-                        collarHits++
-                        collarSumY += (roiTop + cy)
+                    if (isGoldCollarRgb(pixels[rowOff + cx])) {
+                        rowHits++
+                        if (cx < rowMinGx) rowMinGx = cx
+                        if (cx > rowMaxGx) rowMaxGx = cx
+                        rowSumX += cx
                     }
                     cx += 2
+                }
+                if (rowHits > 0 && (rowMaxGx - rowMinGx) <= maxCollarRowSpan) {
+                    val outL = (rowMinGx - outerPad).coerceAtLeast(marginX)
+                    val outR = (rowMaxGx + outerPad).coerceAtMost(width - marginX - 1)
+                    val spillsOntoBlock = isGoldCollarRgb(pixels[rowOff + outL]) && isGoldCollarRgb(pixels[rowOff + outR])
+                    if (!spillsOntoBlock) {
+                        collarHits += rowHits
+                        collarSumX += rowSumX
+                        collarSumY += rowHits.toLong() * (roiTop + cy)
+                    }
                 }
                 cy += 2
             }
@@ -760,12 +791,13 @@ object BlockVisionAnalyzer {
                 continue
             }
 
+            val collarCenterX = if (collarHits > 0) collarSumX.toFloat() / collarHits else compCenterX
             val collarCenterY = if (collarHits > 0) collarSumY.toFloat() / collarHits else -1f
             var headAboveCollar = 0
             var coneBelowCollar = 0
             if (collarHits >= 3 && collarCenterY > 0f) {
                 for (i in compXs.indices) {
-                    if (abs(compXs[i] - compCenterX) <= width * 0.040f) {
+                    if (abs(compXs[i] - collarCenterX) <= width * 0.040f) {
                         val dyCollar = compYs[i] - collarCenterY
                         if (dyCollar in (-width * 0.065f)..(-3f)) {
                             headAboveCollar++
@@ -775,9 +807,9 @@ object BlockVisionAnalyzer {
                     }
                 }
             }
-            val validCollarPlacement = collarHits >= 3 && compW <= width * 0.115f && (
+            val validCollarPlacement = collarHits >= 3 && (
                 (headAboveCollar >= 5 && coneBelowCollar >= 4) ||
-                    (coneBelowCollar >= 12) ||
+                    (compW <= width * 0.115f && coneBelowCollar >= 12) ||
                     (headAboveCollar >= 8 && compW <= width * 0.095f)
                 )
             val effectiveCollarHits = if (validCollarPlacement) collarHits else 0
@@ -1065,8 +1097,9 @@ object BlockVisionAnalyzer {
             }
 
             val standardCollarBody = headHits >= 9 && coneHits >= 12 && xs.size >= 42
+            val bleedTruncatedCollarBody = headHits >= 12 && goldHits >= 5 && coneHits >= 8 && xs.size >= 36
             val occludedConeBody = headHits >= 14 && goldHits >= 5 && (gMaxX - gMinX) in 4..(width * 0.055f).roundToInt() && xs.size >= 24
-            if (!standardCollarBody && !occludedConeBody) continue
+            if (!standardCollarBody && !bleedTruncatedCollarBody && !occludedConeBody) continue
 
             var pMinX = Int.MAX_VALUE
             var pMaxX = Int.MIN_VALUE
