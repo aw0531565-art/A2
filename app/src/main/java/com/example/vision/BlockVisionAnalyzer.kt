@@ -42,7 +42,8 @@ object BlockVisionAnalyzer {
         val maxTopWidth: Int,
         val widestLeftX: Float,
         val widestRightX: Float,
-        val lastTopRowY: Int
+        val lastTopRowY: Int,
+        val medianTopMidX: Float = apexX
     )
 
     private data class SourcePlatformStance(
@@ -389,9 +390,13 @@ object BlockVisionAnalyzer {
         // Step 3: Compute isometric geometric landing center & structural profile
         val isIsometricDiamond = block.widestRowY > block.apexY + 6
         val midpointX = (block.widestLeftX + block.widestRightX) / 2f
-        val blockCenterX = block.apexX * 0.42f + midpointX * 0.58f
+        val blockCenterX = if (isIsometricDiamond) {
+            block.medianTopMidX * 0.65f + midpointX * 0.35f
+        } else {
+            block.apexX * 0.42f + midpointX * 0.58f
+        }
         val blockCenterYRel = if (isIsometricDiamond) {
-            val projectedEquator = block.apexY + block.maxTopWidth * 0.285f
+            val projectedEquator = block.apexY + block.maxTopWidth * 0.288f
             val cappedWidestY = min(block.widestRowY.toFloat(), block.apexY + block.maxTopWidth * 0.35f)
             (cappedWidestY * 0.5f + projectedEquator * 0.5f)
         } else {
@@ -1287,10 +1292,15 @@ object BlockVisionAnalyzer {
             )
 
             val cHeight = traced.lastTopRowY - ry
-            val centerX = traced.apexX * 0.42f + ((traced.widestLeftX + traced.widestRightX) * 0.5f) * 0.58f
+            val midpointX = (traced.widestLeftX + traced.widestRightX) * 0.5f
             val isIsometricDiamond = traced.widestRowY > traced.apexY + 6
+            val centerX = if (isIsometricDiamond) {
+                traced.medianTopMidX * 0.65f + midpointX * 0.35f
+            } else {
+                traced.apexX * 0.42f + midpointX * 0.58f
+            }
             val centerYRel = if (isIsometricDiamond) {
-                val projectedEquator = traced.apexY + traced.maxTopWidth * 0.285f
+                val projectedEquator = traced.apexY + traced.maxTopWidth * 0.288f
                 val cappedWidestY = min(traced.widestRowY.toFloat(), traced.apexY + traced.maxTopWidth * 0.35f)
                 (cappedWidestY * 0.5f + projectedEquator * 0.5f)
             } else {
@@ -1564,6 +1574,9 @@ object BlockVisionAnalyzer {
         val topLeftSky = pixels[marginX / 2]
         val topRightSky = pixels[width - 1 - marginX / 2]
 
+        val sliceMidXs = ArrayList<Float>(32)
+        val sliceYs = ArrayList<Int>(32)
+
         for (ty in startY..maxTraceY) {
             val tOffset = ty * width
             val absY = roiTop + ty
@@ -1624,6 +1637,7 @@ object BlockVisionAnalyzer {
             }
 
             // Clamp asymmetric horizontal bleed into touching neighbor blocks once both halves are solidly established
+            var rowClamped = false
             if (ty - startY >= 8 && cMaxTopWidth >= minValidBlockWidth) {
                 val leftHalf = apexX - lx
                 val rightHalf = rx - apexX
@@ -1632,8 +1646,10 @@ object BlockVisionAnalyzer {
                     val maxAllowedRight = leftHalf * 1.32f + 16f
                     if (leftHalf > maxAllowedLeft) {
                         lx = max(lx, (apexX - maxAllowedLeft).roundToInt())
+                        rowClamped = true
                     } else if (rightHalf > maxAllowedRight) {
                         rx = min(rx, (apexX + maxAllowedRight).roundToInt())
+                        rowClamped = true
                     }
                 }
             }
@@ -1662,6 +1678,10 @@ object BlockVisionAnalyzer {
 
                 cLastTopRowY = ty
                 traceCenterX = ((lx + rx) / 2).coerceIn(marginX, width - marginX - 1)
+                if (!rowClamped && ty >= startY + 3 && ty <= maxWideningY && rowWidth >= 14) {
+                    sliceMidXs.add((lx + rx) * 0.5f)
+                    sliceYs.add(ty)
+                }
 
                 val pastEquatorWall = cMaxTopWidth >= minValidBlockWidth &&
                     ty > startY + (cMaxTopWidth * 0.36f).roundToInt() &&
@@ -1681,6 +1701,19 @@ object BlockVisionAnalyzer {
             }
         }
 
+        val upperMids = ArrayList<Float>(sliceMidXs.size)
+        for (i in sliceMidXs.indices) {
+            if (sliceYs[i] <= cWidestRowY + 2) {
+                upperMids.add(sliceMidXs[i])
+            }
+        }
+        val medianTopMidX = if (upperMids.size >= 4) {
+            upperMids.sort()
+            upperMids[upperMids.size / 2]
+        } else {
+            apexX * 0.42f + ((cWidestLeftX + cWidestRightX) * 0.5f) * 0.58f
+        }
+
         return BlockTrace(
             apexX = apexX,
             apexY = startY,
@@ -1688,7 +1721,8 @@ object BlockVisionAnalyzer {
             maxTopWidth = cMaxTopWidth,
             widestLeftX = cWidestLeftX,
             widestRightX = cWidestRightX,
-            lastTopRowY = cLastTopRowY
+            lastTopRowY = cLastTopRowY,
+            medianTopMidX = medianTopMidX
         )
     }
 

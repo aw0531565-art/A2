@@ -681,7 +681,57 @@ class JumpTrainerTest {
         val mistAfterCombo = healedCombo.adaptiveBiasesMs["MIST:NARROW:CENTER:d450"] ?: 0f
         assertTrue("Combo +4 should decay MIST +40 down to <= 24ms, got $mistAfterCombo", mistAfterCombo <= 24f)
     }
+
+    @Test
+    fun `smooth NEAR200-270 curve prevents step cliff and OUT_FAR at n=217 updates DIST instead of crashing k`() {
+        val cfg = BotConfig(
+            kFactor = 1.376f,
+            offsetMs = 31f,
+            autoTrainEnabled = true,
+            adaptiveBiasesMs = mapOf("DIST:NEAR200" to -12f, "DIST:NEAR270" to -14f)
+        )
+        val adj200 = JumpTrainer.computeContextAdjustmentMs(cfg, 200f, "MEDIUM", "WHITE", "CENTER")
+        val adj235 = JumpTrainer.computeContextAdjustmentMs(cfg, 235f, "MEDIUM", "WHITE", "CENTER")
+        val adj295 = JumpTrainer.computeContextAdjustmentMs(cfg, 295f, "MEDIUM", "WHITE", "CENTER")
+        assertEquals(-12L, adj200)
+        assertTrue("Interpolated 235px should be near -13ms, got $adj235", adj235 in -14L..-12L)
+        assertTrue("295px should fade smoothly between -14ms and 0ms, got $adj295", adj295 in -10L..-3L)
+
+        // Reproduces #260 OUT_FAR at n=217 r=1.24: must shift DIST:NEAR200 strongly negative while protecting global kFactor
+        val (after260, note260) = JumpTrainer.applyOnlineUpdate(
+            config = cfg,
+            dNorm = 217f,
+            holdMs = 317L,
+            outcome = JumpOutcome.OUT_OVERSHOOT,
+            landingRatio = 1.24f,
+            history = emptyList(),
+            targetProfile = "MINI",
+            targetColorGroup = "PINK",
+            pawnStance = "SIDE_FRONT"
+        )
+        val dist200After = after260.adaptiveBiasesMs["DIST:NEAR200"] ?: 0f
+        assertTrue("OUT_OVERSHOOT at n=217 must deepen DIST:NEAR200 ($note260), got $dist200After", dist200After <= -24f)
+        assertTrue(
+            "Short MINI OUT_FAR should protect global kFactor from crashing (1.376 -> ${after260.kFactor})",
+            cfg.kFactor - after260.kFactor <= 0.005f
+        )
+
+        // Reproduces #254 pan-lagged +1pt at n=561 r=0.93: must not spike k sharply
+        val (after254, note254) = JumpTrainer.applyOnlineUpdate(
+            config = BotConfig(kFactor = 1.370f, offsetMs = 31f, autoTrainEnabled = true),
+            dNorm = 561f,
+            holdMs = 807L,
+            outcome = JumpOutcome.CENTER,
+            landingRatio = 0.93f,
+            history = emptyList(),
+            targetProfile = "NARROW",
+            targetColorGroup = "CYAN",
+            pawnStance = "SIDE_BACK",
+            scoreDelta = 1
+        )
+        assertTrue(
+            "Pan-lagged +1pt at n=561 r=0.93 should keep k spike <= 0.003 ($note254 -> ${after254.kFactor})",
+            after254.kFactor - 1.370f <= 0.0031f
+        )
+    }
 }
-
-
-

@@ -18,7 +18,7 @@ object JumpTrainer {
     private const val MAX_K = 2.15f
     private const val MIN_B = -15f
     private const val MAX_B = 75f
-    private const val ANCHOR_K = 1.38f
+    private const val ANCHOR_K = 1.374f
     private const val MAX_NON_FATAL_K_STEP = 0.014f
     private const val MAX_FATAL_K_STEP = 0.016f
     private const val MAX_CONTEXT_BIAS_MS = 105f
@@ -31,6 +31,23 @@ object JumpTrainer {
         dNorm < 235f -> "DIST:NEAR200"
         dNorm < 310f -> "DIST:NEAR270"
         else -> ""
+    }
+
+    private fun computeDistBandAdjustmentMs(biases: Map<String, Float>, dNorm: Float): Float {
+        if (dNorm >= 320f) return 0f
+        val d200 = biases["DIST:NEAR200"] ?: 0f
+        val d270 = biases["DIST:NEAR270"] ?: 0f
+        return when {
+            dNorm <= 200f -> d200
+            dNorm < 265f -> {
+                val t = (dNorm - 200f) / 65f
+                d200 * (1f - t) + d270 * t
+            }
+            else -> {
+                val t = (dNorm - 265f) / 55f
+                d270 * (1f - t)
+            }
+        }
     }
 
     fun profileKey(targetProfile: String): String = "BLK:${targetProfile.ifBlank { "MEDIUM" }}"
@@ -46,7 +63,7 @@ object JumpTrainer {
 
     /**
      * Computes learned millisecond adjustment for a specific target block profile/color,
-     * pawn source stance (CENTER vs SIDE_FRONT/SIDE_BACK/SIDE_EDGE), short distance band,
+     * pawn source stance (CENTER vs SIDE_FRONT/SIDE_BACK/SIDE_EDGE), smooth short-distance spring curve,
      * and exact spot mistake guard.
      */
     fun computeContextAdjustmentMs(
@@ -65,11 +82,10 @@ object JumpTrainer {
             biases[profileKey(targetBlockProfile)] ?: 0f
         }
         val sigKey = signatureKey(targetBlockProfile, targetColorGroup)
-        val sigBias = if (sigKey.isNotEmpty()) (biases[sigKey] ?: 0f) * 0.85f else 0f
+        val sigBias = if (sigKey.isNotEmpty()) (biases[sigKey] ?: 0f) * 0.80f else 0f
         val stKey = stanceKey(pawnStance)
         val stanceBias = if (stKey.isNotEmpty()) (biases[stKey] ?: 0f) else 0f
-        val dKey = distBandKey(normalizedDistancePx)
-        val distBias = if (dKey.isNotEmpty()) (biases[dKey] ?: 0f) else 0f
+        val distBias = computeDistBandAdjustmentMs(biases, normalizedDistancePx)
         val mistBias = biases[mistakeKey(targetBlockProfile, pawnStance, normalizedDistancePx)] ?: 0f
 
         return (blkBias + sigBias + stanceBias + distBias + mistBias)
@@ -223,38 +239,40 @@ object JumpTrainer {
             }
 
             outcome == JumpOutcome.OUT_SHORT -> {
+                val shortDistDamp = if (dNorm < 260f) 0.25f else 1.0f
                 if (landingRatio != null && landingRatio in 0.45f..0.95f) {
                     val safeRatio = landingRatio.coerceIn(0.72f, 0.92f)
                     val idealHoldMs = (holdMs.toFloat() / safeRatio)
                         .coerceIn(config.minPressMs.toFloat(), config.maxPressMs.toFloat())
                     val deltaMs = ((idealHoldMs - holdMs.toFloat()) * 0.45f).coerceIn(18f, 40f)
                     learnedErrorMs = deltaMs
-                    newK += ((deltaMs * globalShare) * 0.80f) / dNorm.coerceAtLeast(180f)
-                    newB += (deltaMs * globalShare) * 0.20f
+                    newK += ((deltaMs * globalShare * shortDistDamp) * 0.80f) / dNorm.coerceAtLeast(180f)
+                    newB += (deltaMs * globalShare * shortDistDamp) * 0.20f
                     note = String.format(Locale.US, "Out-short LMS r=%.2f +%.0fms", landingRatio, deltaMs)
                 } else {
                     learnedErrorMs = 32f
-                    newK += 0.022f * globalShare
-                    newB += 3f * globalShare
+                    newK += 0.022f * globalShare * shortDistDamp
+                    newB += 3f * globalShare * shortDistDamp
                     note = "Out-short guard (+k,+b)"
                 }
             }
 
             outcome == JumpOutcome.OUT_OVERSHOOT -> {
                 allowLargeRecovery = true
+                val shortDistDamp = if (dNorm < 260f) 0.25f else 1.0f
                 if (landingRatio != null && landingRatio in 1.06f..1.65f) {
                     val safeRatio = landingRatio.coerceIn(1.07f, 1.32f)
                     val idealHoldMs = (holdMs.toFloat() / safeRatio)
                         .coerceIn(config.minPressMs.toFloat(), config.maxPressMs.toFloat())
                     val deltaMs = ((idealHoldMs - holdMs.toFloat()) * 0.42f).coerceIn(-40f, -20f)
                     learnedErrorMs = deltaMs
-                    newK += ((deltaMs * globalShare) * 0.80f) / dNorm.coerceAtLeast(180f)
-                    newB += (deltaMs * globalShare) * 0.20f
+                    newK += ((deltaMs * globalShare * shortDistDamp) * 0.80f) / dNorm.coerceAtLeast(180f)
+                    newB += (deltaMs * globalShare * shortDistDamp) * 0.20f
                     note = String.format(Locale.US, "Out-far LMS r=%.2f %.0fms", landingRatio, deltaMs)
                 } else {
                     learnedErrorMs = -34f
-                    newK -= 0.022f * globalShare
-                    newB -= 3f * globalShare
+                    newK -= 0.022f * globalShare * shortDistDamp
+                    newB -= 3f * globalShare * shortDistDamp
                     note = "Out-far guard (-k,-b)"
                 }
             }
@@ -346,13 +364,16 @@ object JumpTrainer {
                         outcome == JumpOutcome.SHORT || outcome == JumpOutcome.PAST_CENTER -> 0.34f
                         else -> 0.26f
                     }
-                    // Prevent a single noisy jump (especially at short D) from slashing k/STANCE
+                    // Prevent a single noisy jump (or long-range camera pan lag) from slashing k/STANCE
                     var deltaMs = ((idealHoldMs - holdMs.toFloat()) * gain).coerceIn(-28f, 28f)
-                    if (singlePointOffCenter && abs(deltaMs) < 6f) {
+                    val panLagZone = singlePointOffCenter && dNorm >= 500f && landingRatio in 0.92f..0.97f
+                    if (panLagZone) {
+                        deltaMs *= 0.42f
+                    } else if (singlePointOffCenter && abs(deltaMs) < 6f) {
                         deltaMs = if (errorRatio > 0f) 6f else -6f
                     }
                     learnedErrorMs = deltaMs
-                    val shortDistDamp = if (dNorm < 280f) 0.55f else 1.0f
+                    val shortDistDamp = if (dNorm < 280f) 0.45f else 1.0f
 
                     newK += ((deltaMs * globalShare * shortDistDamp) * 0.80f) / dNorm.coerceAtLeast(180f)
                     newB += (deltaMs * globalShare) * 0.20f
@@ -381,18 +402,20 @@ object JumpTrainer {
         if (abs(learnedErrorMs) >= 3f) {
             val isShortBand = dKey.isNotEmpty()
             val ctxWeight = when {
-                isMiniBlock -> 0.90f
-                isSpecialtyContext -> 0.72f
-                else -> 0.28f
+                isMiniBlock -> 0.85f
+                isSpecialtyContext -> 0.65f
+                else -> 0.25f
             }
             val ctxDelta = learnedErrorMs * ctxWeight
 
-            if (isShortBand && !isFatalOut && landingRatio != null) {
+            if (isShortBand && (landingRatio != null || isFatalOut)) {
                 val curDist = newBiases[dKey] ?: 0f
-                val distMin = if (dKey == "DIST:NEAR270") -22f else -38f
-                newBiases[dKey] = (curDist + learnedErrorMs * 0.50f).coerceIn(distMin, 18f)
+                val distMin = if (dKey == "DIST:NEAR270") -26f else -42f
+                val distMax = if (dKey == "DIST:NEAR270") 10f else 8f
+                val stepShare = if (isFatalOut) 0.55f else 0.50f
+                newBiases[dKey] = (curDist + learnedErrorMs * stepShare).coerceIn(distMin, distMax)
             }
-            val distAtten = if (isShortBand && !isFatalOut) 0.55f else 1.0f
+            val distAtten = if (isShortBand) 0.45f else 1.0f
 
             if (targetProfile != "MEDIUM") {
                 val curBlk = newBiases[pKey] ?: 0f
@@ -405,11 +428,12 @@ object JumpTrainer {
                     val blkShare = when {
                         isMiniBlock && (stKey.isEmpty() || pawnStance == "CENTER") -> 0.78f
                         isMiniBlock -> 0.55f
-                        stKey.isNotEmpty() && pawnStance != "CENTER" -> 0.45f
-                        else -> 0.65f
+                        stKey.isNotEmpty() && pawnStance != "CENTER" -> 0.40f
+                        else -> 0.60f
                     }
-                    val blkCap = if (isMiniBlock) 90f else 65f
-                    val rawBlk = (curBlk + ctxDelta * blkShare * distAtten).coerceIn(-blkCap, blkCap)
+                    val blkMin = if (isMiniBlock) -65f else -24f
+                    val blkMax = if (isMiniBlock) 75f else 14f
+                    val rawBlk = (curBlk + ctxDelta * blkShare * distAtten).coerceIn(blkMin, blkMax)
                     newBiases[pKey] = if (singlePointOffCenter && isMiniBlock && learnedErrorMs < 0f) {
                         rawBlk.coerceAtLeast(4f)
                     } else {
@@ -419,16 +443,16 @@ object JumpTrainer {
             }
 
             if (sKey.isNotEmpty()) {
-                val sigCap = if (targetProfile == "MEDIUM") 14f else 20f
+                val sigCap = if (targetProfile == "MEDIUM") 12f else 16f
                 val curSig = newBiases[sKey] ?: 0f
-                newBiases[sKey] = (curSig + ctxDelta * 0.18f * distAtten).coerceIn(-sigCap, sigCap)
+                newBiases[sKey] = (curSig + ctxDelta * 0.16f * distAtten).coerceIn(-sigCap, sigCap)
             }
 
             if (stKey.isNotEmpty() && pawnStance != "CENTER") {
                 val curSt = newBiases[stKey] ?: 0f
-                val maxStStep = if (isFatalOut) 10f else 7f
-                val stDelta = (ctxDelta * 0.25f * distAtten).coerceIn(-maxStStep, maxStStep)
-                newBiases[stKey] = (curSt + stDelta).coerceIn(-18f, 18f)
+                val maxStStep = if (isFatalOut) 8f else 5f
+                val stDelta = (ctxDelta * 0.22f * distAtten).coerceIn(-maxStStep, maxStStep)
+                newBiases[stKey] = (curSt + stDelta).coerceIn(-14f, 14f)
                 if (!note.contains(pawnStance)) {
                     note += " [$pawnStance]"
                 }
@@ -446,20 +470,22 @@ object JumpTrainer {
             }
         }
 
-        // Damped 2-parameter OLS blend ONLY over clean STANDARD (CENTER + MEDIUM) jumps
+        // Robust Huber IRLS regression over recent clean baseline & bullseye jumps
         val validForOls = !isFatalOut && !comboConfirmed && !isSpecialtyContext && (landingRatio == null || landingRatio >= 0.72f)
         if (validForOls) {
             val fitSamples = history.asSequence()
                 .takeWhile { it.outcome != JumpOutcome.USER_SHORT && it.outcome != JumpOutcome.USER_LONG }
-                .filter {
-                    (it.outcome == JumpOutcome.CENTER || it.outcome == JumpOutcome.SHORT || it.outcome == JumpOutcome.PAST_CENTER) &&
-                        it.landingRatio != null &&
-                        it.landingRatio in 0.72f..1.40f &&
-                        it.normalizedDistancePx >= 150f &&
-                        it.targetProfile == "MEDIUM" &&
-                        (it.pawnStance == "CENTER" || it.pawnStance == "UNKNOWN")
+                .filter { rec ->
+                    val isBullseye = (rec.scoreDelta ?: 0) >= 2 && rec.outcome == JumpOutcome.CENTER
+                    val hasCleanRatio = (rec.outcome == JumpOutcome.CENTER || rec.outcome == JumpOutcome.SHORT || rec.outcome == JumpOutcome.PAST_CENTER) &&
+                        rec.landingRatio != null &&
+                        rec.landingRatio in 0.72f..1.40f
+                    val baseOk = rec.normalizedDistancePx >= 240f &&
+                        rec.targetProfile == "MEDIUM" &&
+                        (rec.pawnStance == "CENTER" || rec.pawnStance == "UNKNOWN")
+                    baseOk && (isBullseye || hasCleanRatio)
                 }
-                .take(18)
+                .take(20)
                 .toList()
 
             if (fitSamples.size >= 4) {
@@ -468,9 +494,9 @@ object JumpTrainer {
                 if (maxD - minD >= 100f) {
                     val fitted = weightedLinearFit(fitSamples, config)
                     if (fitted != null) {
-                        newK = newK * 0.90f + fitted.first * 0.10f
-                        newB = newB * 0.90f + fitted.second * 0.10f
-                        note += " + OLS"
+                        newK = newK * 0.88f + fitted.first * 0.12f
+                        newB = newB * 0.88f + fitted.second * 0.12f
+                        note += " + Huber"
                     }
                 }
             }
@@ -578,28 +604,68 @@ object JumpTrainer {
         samples: List<JumpTelemetryRecord>,
         config: BotConfig
     ): Pair<Float, Float>? {
-        var sw = 0.0
-        var sx = 0.0
-        var sy = 0.0
-        var sxx = 0.0
-        var sxy = 0.0
-        for (rec in samples) {
-            val r = (rec.landingRatio ?: continue).coerceIn(0.60f, 1.45f)
-            val idealY = (rec.holdMs.toDouble() / r).coerceIn(config.minPressMs.toDouble(), config.maxPressMs.toDouble())
-            val x = rec.normalizedDistancePx.toDouble()
-            val w = if (rec.outcome == JumpOutcome.CENTER) 1.6 else 1.0
-            sw += w
-            sx += w * x
-            sy += w * idealY
-            sxx += w * x * x
-            sxy += w * x * idealY
+        val xs = DoubleArray(samples.size)
+        val ys = DoubleArray(samples.size)
+        val baseWeights = DoubleArray(samples.size)
+        var count = 0
+
+        for ((idx, rec) in samples.withIndex()) {
+            val isBullseye = (rec.scoreDelta ?: 0) >= 2 && rec.outcome == JumpOutcome.CENTER
+            val idealY = if (isBullseye) {
+                (rec.holdMs - rec.appliedBiasMs).toDouble()
+            } else {
+                val r = (rec.landingRatio ?: continue).coerceIn(0.60f, 1.45f)
+                (rec.holdMs.toDouble() / r) - rec.appliedBiasMs.toDouble()
+            }.coerceIn(config.minPressMs.toDouble(), config.maxPressMs.toDouble())
+            xs[count] = rec.normalizedDistancePx.toDouble()
+            ys[count] = idealY
+            val recencyDecay = Math.pow(0.92, idx.toDouble())
+            val qualityW = when {
+                isBullseye -> 2.2
+                rec.outcome == JumpOutcome.CENTER -> 1.4
+                else -> 0.9
+            }
+            baseWeights[count] = qualityW * recencyDecay
+            count++
         }
-        val denom = sw * sxx - sx * sx
-        if (abs(denom) < 1e-3) return null
-        val slope = ((sw * sxy - sx * sy) / denom).toFloat()
-        val intercept = ((sy - slope * sx) / sw).toFloat()
-        if (slope !in MIN_K..MAX_K || intercept !in MIN_B..MAX_B) return null
-        return slope to intercept
+        if (count < 4) return null
+
+        var slope = config.kFactor.toDouble()
+        var intercept = config.offsetMs.toDouble()
+        val huberDelta = 14.0
+
+        // 3 iterations of IRLS Huber Regression (equivalent to sklearn HuberRegressor)
+        for (iter in 0 until 3) {
+            var sw = 0.0
+            var sx = 0.0
+            var sy = 0.0
+            var sxx = 0.0
+            var sxy = 0.0
+            for (i in 0 until count) {
+                val residual = abs(ys[i] - (slope * xs[i] + intercept))
+                val huberW = if (iter == 0 || residual <= huberDelta) 1.0 else huberDelta / residual
+                val w = baseWeights[i] * huberW
+                val x = xs[i]
+                val y = ys[i]
+                sw += w
+                sx += w * x
+                sy += w * y
+                sxx += w * x * x
+                sxy += w * x * y
+            }
+            val denom = sw * sxx - sx * sx
+            if (abs(denom) < 1e-3) return null
+            val nextSlope = (sw * sxy - sx * sy) / denom
+            val nextIntercept = (sy - nextSlope * sx) / sw
+            if (nextSlope !in MIN_K.toDouble()..MAX_K.toDouble() ||
+                nextIntercept !in MIN_B.toDouble()..MAX_B.toDouble()
+            ) {
+                return null
+            }
+            slope = nextSlope
+            intercept = nextIntercept
+        }
+        return slope.toFloat() to intercept.toFloat()
     }
 
     fun formatTelemetryReport(
