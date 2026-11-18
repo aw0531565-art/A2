@@ -170,12 +170,32 @@ object BlockVisionAnalyzer {
 
         val scoreReading = ScoreDigitReader.readScore(bitmap, excludedRect)
 
-        val sortedXs = pawn.xs.sorted()
         val sortedYs = pawn.ys.sorted()
+        val maxAllowedPawnY = if (pawn.collarHits >= 3 && pawn.collarCenterY > 0f) {
+            pawn.collarCenterY + width * 0.106f
+        } else {
+            Float.MAX_VALUE
+        }
+        val boundedIndices = if (maxAllowedPawnY < Float.MAX_VALUE) {
+            pawn.ys.indices.filter { pawn.ys[it] <= maxAllowedPawnY }
+        } else {
+            emptyList()
+        }
+        val useBounded = boundedIndices.size >= 16
+        val sortedXs = if (useBounded) {
+            boundedIndices.map { pawn.xs[it] }.sorted()
+        } else {
+            pawn.xs.sorted()
+        }
+        val boundedYs = if (useBounded) {
+            boundedIndices.map { pawn.ys[it] }.sorted()
+        } else {
+            sortedYs
+        }
         val p10X = sortedXs[(sortedXs.size * 0.10f).toInt().coerceIn(0, sortedXs.lastIndex)]
         val p90X = sortedXs[(sortedXs.size * 0.90f).toInt().coerceIn(0, sortedXs.lastIndex)]
         val p05Y = sortedYs[(sortedYs.size * 0.05f).toInt().coerceIn(0, sortedYs.lastIndex)]
-        val p95Y = sortedYs[(sortedYs.size * 0.95f).toInt().coerceIn(0, sortedYs.lastIndex)]
+        val p95Y = boundedYs[(boundedYs.size * 0.95f).toInt().coerceIn(0, boundedYs.lastIndex)]
 
         val pawnCenterX = (p10X + p90X) / 2f
         val pawnTopY = p05Y.toFloat()
@@ -202,7 +222,7 @@ object BlockVisionAnalyzer {
 
         // Step 2: Three-pass target block detection (opaque, translucent/glass, and subtle background-matching blocks)
         val minRunLength = max(5, (width * 0.010f).roundToInt())
-        val minValidBlockWidth = max(40, (width * 0.058f).roundToInt())
+        val minValidBlockWidth = max(36, (width * 0.052f).roundToInt())
         val minValidBlockHeight = max(16, (height * 0.011f).roundToInt())
         val translucentThreshold = max(12, (config.bgDiffThreshold * 0.36f).roundToInt())
         val translucentThresholdSq = translucentThreshold * translucentThreshold * 3
@@ -241,7 +261,7 @@ object BlockVisionAnalyzer {
             minValidBlockHeight = minValidBlockHeight,
             rejectDarkShadows = true,
             requireSharpBoundary = true,
-            allowShadowLeftOffset = false,
+            allowShadowLeftOffset = true,
             preferredTargetHint = preferredTargetHint,
             sourcePlatform = preSourceStance
         )
@@ -365,7 +385,7 @@ object BlockVisionAnalyzer {
         // Step 3: Compute isometric geometric landing center & structural profile
         val isIsometricDiamond = block.widestRowY > block.apexY + 6
         val midpointX = (block.widestLeftX + block.widestRightX) / 2f
-        val blockCenterX = block.apexX * 0.35f + midpointX * 0.65f
+        val blockCenterX = block.apexX * 0.42f + midpointX * 0.58f
         val blockCenterYRel = if (isIsometricDiamond) {
             val projectedEquator = block.apexY + block.maxTopWidth * 0.285f
             val cappedWidestY = min(block.widestRowY.toFloat(), block.apexY + block.maxTopWidth * 0.35f)
@@ -1234,7 +1254,7 @@ object BlockVisionAnalyzer {
             )
 
             val cHeight = traced.lastTopRowY - ry
-            val centerX = traced.apexX * 0.35f + ((traced.widestLeftX + traced.widestRightX) * 0.5f) * 0.65f
+            val centerX = traced.apexX * 0.42f + ((traced.widestLeftX + traced.widestRightX) * 0.5f) * 0.58f
             val isIsometricDiamond = traced.widestRowY > traced.apexY + 6
             val centerYRel = if (isIsometricDiamond) {
                 val projectedEquator = traced.apexY + traced.maxTopWidth * 0.285f
@@ -1839,12 +1859,15 @@ object BlockVisionAnalyzer {
         var topSurfaceRelY = Int.MAX_VALUE
         var seedX = pawnCenterX.roundToInt().coerceIn(marginX, width - marginX - 1)
 
+        val topLeftSky = pixels[marginX / 2]
+        val topRightSky = pixels[width - 1 - marginX / 2]
         var ry = scanStartRel
         while (ry <= scanEndRel) {
             val absY = roiTop + ry
             val rowOff = ry * width
-            val leftBg = pixels[rowOff + marginX / 2]
-            val rightBg = pixels[rowOff + width - 1 - marginX / 2]
+            val rawLeftBg = pixels[rowOff + marginX / 2]
+            val rawRightBg = pixels[rowOff + width - 1 - marginX / 2]
+            val (leftBg, rightBg) = cleanRowSkyPair(rawLeftBg, rawRightBg, topLeftSky, topRightSky)
             val pawnInFootBand = absY >= (pawnBaseY - width * 0.065f) && absY <= (pawnBaseY + 8f)
 
             var anchorX = seedX

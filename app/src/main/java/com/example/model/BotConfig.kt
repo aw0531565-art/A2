@@ -7,8 +7,8 @@ enum class FormulaMode(val label: String) {
 
 data class BotConfig(
     val formulaMode: FormulaMode = FormulaMode.LINEAR,
-    val kFactor: Float = 1.376f,
-    val offsetMs: Float = 38f,
+    val kFactor: Float = 1.365f,
+    val offsetMs: Float = 36f,
     val quadFactor: Float = 0.00025f,
     val pawnColorRgb: Int = 0x3E3353,
     val pawnColorTolerance: Int = 40,

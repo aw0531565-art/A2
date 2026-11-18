@@ -789,6 +789,54 @@ class BlockVisionAnalyzerTest {
             blk.widthPx in 225f..275f
         )
     }
+
+    @Test
+    fun `clamps downward dark-wall bleed below pawn feet using collar anchor`() {
+        val w = 720
+        val h = 1600
+        val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bmp)
+        canvas.drawColor(android.graphics.Color.rgb(0x42, 0x4E, 0x8C))
+
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+        // Draw white source platform at (180, 955) with a matching dark purple-charcoal shadow/pillar directly below it down to y=1065
+        val px = 180f
+        val py = 955f
+        paint.color = android.graphics.Color.rgb(0x3E, 0x33, 0x53)
+        canvas.drawRect(px - 18f, py - 5f, px + 18f, 1065f, paint)
+        // White deck rim slightly off-center so vertical strip overlaps pawn feet seamlessly
+        paint.color = android.graphics.Color.rgb(245, 245, 245)
+        canvas.drawRect(px + 20f, py - 10f, px + 115f, py + 25f, paint)
+        canvas.drawRect(px - 115f, py - 10f, px - 20f, py + 25f, paint)
+
+        // Draw real pawn standing at (180, 955)
+        paint.color = android.graphics.Color.rgb(0x3E, 0x33, 0x53)
+        canvas.drawOval(px - 15f, py - 18f, px + 15f, py - 3f, paint)
+        canvas.drawRect(px - 10f, py - 52f, px + 10f, py - 12f, paint)
+        paint.color = android.graphics.Color.rgb(210, 175, 98)
+        canvas.drawOval(px - 12f, py - 60f, px + 12f, py - 50f, paint)
+        paint.color = android.graphics.Color.rgb(0x3E, 0x33, 0x53)
+        canvas.drawCircle(px, py - 72f, 12f, paint)
+
+        // Draw target white diamond at (510, 777)
+        val bx = 510f
+        val by = 777f
+        val top = android.graphics.Path().apply {
+            moveTo(bx, by - 55f); lineTo(bx + 125f, by); lineTo(bx, by + 55f); lineTo(bx - 125f, by); close()
+        }
+        paint.color = android.graphics.Color.rgb(250, 250, 250)
+        canvas.drawPath(top, paint)
+
+        val result = BlockVisionAnalyzer.analyze(bmp, BotConfig(roiTopFraction = 0.28f, roiBottomFraction = 0.72f))
+        bmp.recycle()
+
+        assertTrue("Pawn should be detected cleanly: ${result.statusMessage}", result.pawnFound)
+        assertTrue(
+            "pawnBaseY must clamp near real foot ~955 without bleeding down dark wall to 1065; got ${result.pawnBaseY}",
+            result.pawnBaseY in 935f..978f
+        )
+        assertTrue("Target block should be detected", result.blockFound)
+    }
 }
 
 

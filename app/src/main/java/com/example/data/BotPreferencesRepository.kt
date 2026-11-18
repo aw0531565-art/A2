@@ -47,7 +47,7 @@ class BotPreferencesRepository(private val context: Context) {
 
     private companion object {
         const val MIN_VALID_CALIB_VERSION = 7
-        const val CURRENT_CALIB_VERSION = 10
+        const val CURRENT_CALIB_VERSION = 11
         const val MAX_STORED_RECORDS = 60
     }
 
@@ -77,13 +77,13 @@ class BotPreferencesRepository(private val context: Context) {
         rawBiases.forEach { (k, v) ->
             if (k != "BLK:MEDIUM") {
                 biases[k] = when {
-                    storedVersion < CURRENT_CALIB_VERSION && k == "BLK:MINI" -> v.coerceIn(-12f, 8f)
-                    storedVersion < CURRENT_CALIB_VERSION && k.startsWith("MIST:") -> v.coerceIn(-20f, 20f)
-                    storedVersion < CURRENT_CALIB_VERSION && k.startsWith("STANCE:") -> v.coerceIn(-22f, 22f)
+                    storedVersion < CURRENT_CALIB_VERSION && k == "BLK:MINI" -> v.coerceIn(-6f, 4f)
+                    storedVersion < CURRENT_CALIB_VERSION && k.startsWith("MIST:") -> v.coerceIn(-16f, 16f)
+                    storedVersion < CURRENT_CALIB_VERSION && k.startsWith("STANCE:") -> v.coerceIn(-12f, 12f)
                     k.startsWith("SIG:MEDIUM_") -> v.coerceIn(-14f, 14f)
                     k.startsWith("SIG:") -> v.coerceIn(-20f, 20f)
-                    k.startsWith("STANCE:") -> v.coerceIn(-36f, 36f)
-                    k.startsWith("MIST:") -> v.coerceIn(-50f, 50f)
+                    k.startsWith("STANCE:") -> v.coerceIn(-18f, 18f)
+                    k.startsWith("MIST:") -> v.coerceIn(-38f, 38f)
                     else -> v
                 }
             }
@@ -95,12 +95,12 @@ class BotPreferencesRepository(private val context: Context) {
         val rawK = prefs[Keys.K_FACTOR] ?: defaults.kFactor
         val rawB = prefs[Keys.OFFSET_MS] ?: defaults.offsetMs
         val migratedK = if (storedVersion < CURRENT_CALIB_VERSION) {
-            rawK.coerceIn(1.365f, 1.378f)
+            rawK.coerceIn(1.360f, 1.370f)
         } else {
             rawK
         }
         val migratedB = if (storedVersion < CURRENT_CALIB_VERSION) {
-            rawB.coerceIn(36f, 39f)
+            rawB.coerceIn(35f, 38f)
         } else {
             rawB
         }

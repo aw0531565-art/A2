@@ -20,9 +20,9 @@ object JumpTrainer {
     private const val MAX_B = 75f
     private const val ANCHOR_K = 1.38f
     private const val MAX_NON_FATAL_K_STEP = 0.014f
-    private const val MAX_FATAL_K_STEP = 0.022f
+    private const val MAX_FATAL_K_STEP = 0.016f
     private const val MAX_CONTEXT_BIAS_MS = 105f
-    private const val MAX_MISTAKE_GUARD_MS = 50f
+    private const val MAX_MISTAKE_GUARD_MS = 38f
     private const val MAX_STORED_BIASES = 48
 
     fun distBucket(dNorm: Float): Int = ((dNorm / 50f).roundToInt() * 50).coerceIn(100, 1200)
@@ -397,7 +397,7 @@ object JumpTrainer {
                     isMiniBlock &&
                     outcome == JumpOutcome.CENTER &&
                     learnedErrorMs < 0f &&
-                    curBlk <= 7f
+                    curBlk <= 4f
                 if (!skipNegativeMiniEdgeTrim) {
                     val blkShare = when {
                         isMiniBlock && (stKey.isEmpty() || pawnStance == "CENTER") -> 0.78f
@@ -408,7 +408,7 @@ object JumpTrainer {
                     val blkCap = if (isMiniBlock) 90f else 65f
                     val rawBlk = (curBlk + ctxDelta * blkShare * distAtten).coerceIn(-blkCap, blkCap)
                     newBiases[pKey] = if (singlePointOffCenter && isMiniBlock && learnedErrorMs < 0f) {
-                        rawBlk.coerceAtLeast(6f)
+                        rawBlk.coerceAtLeast(4f)
                     } else {
                         rawBlk
                     }
@@ -423,16 +423,16 @@ object JumpTrainer {
 
             if (stKey.isNotEmpty() && pawnStance != "CENTER") {
                 val curSt = newBiases[stKey] ?: 0f
-                val maxStStep = if (isFatalOut) 14f else 9f
-                val stDelta = (ctxDelta * 0.30f * distAtten).coerceIn(-maxStStep, maxStStep)
-                newBiases[stKey] = (curSt + stDelta).coerceIn(-36f, 36f)
+                val maxStStep = if (isFatalOut) 10f else 7f
+                val stDelta = (ctxDelta * 0.25f * distAtten).coerceIn(-maxStStep, maxStStep)
+                newBiases[stKey] = (curSt + stDelta).coerceIn(-18f, 18f)
                 if (!note.contains(pawnStance)) {
                     note += " [$pawnStance]"
                 }
             }
 
             if (isFatalOut || outcome == JumpOutcome.SHORT || outcome == JumpOutcome.PAST_CENTER) {
-                val mistDelta = if (isFatalOut) learnedErrorMs.coerceIn(-45f, 45f) else (learnedErrorMs * 0.38f)
+                val mistDelta = if (isFatalOut) learnedErrorMs.coerceIn(-36f, 36f) else (learnedErrorMs * 0.38f)
                 val curMist = newBiases[mKey] ?: 0f
                 newBiases[mKey] = (curMist + mistDelta).coerceIn(-MAX_MISTAKE_GUARD_MS, MAX_MISTAKE_GUARD_MS)
             } else if (singlePointOffCenter) {
