@@ -18,7 +18,7 @@ object JumpTrainer {
     private const val MAX_K = 2.15f
     private const val MIN_B = -15f
     private const val MAX_B = 75f
-    private const val ANCHOR_K = 1.374f
+    private const val ANCHOR_K = 1.388f
     private const val MAX_NON_FATAL_K_STEP = 0.014f
     private const val MAX_FATAL_K_STEP = 0.016f
     private const val MAX_CONTEXT_BIAS_MS = 105f
@@ -29,12 +29,12 @@ object JumpTrainer {
 
     fun distBandKey(dNorm: Float): String = when {
         dNorm < 235f -> "DIST:NEAR200"
-        dNorm < 310f -> "DIST:NEAR270"
+        dNorm < 308f -> "DIST:NEAR270"
         else -> ""
     }
 
     private fun computeDistBandAdjustmentMs(biases: Map<String, Float>, dNorm: Float): Float {
-        if (dNorm >= 320f) return 0f
+        if (dNorm >= 310f) return 0f
         val d200 = biases["DIST:NEAR200"] ?: 0f
         val d270 = biases["DIST:NEAR270"] ?: 0f
         return when {
@@ -44,7 +44,7 @@ object JumpTrainer {
                 d200 * (1f - t) + d270 * t
             }
             else -> {
-                val t = (dNorm - 265f) / 55f
+                val t = (dNorm - 265f) / 45f
                 d270 * (1f - t)
             }
         }
@@ -158,14 +158,21 @@ object JumpTrainer {
             }
         }
 
-        // Fallback if post-settled stayed right on the pre-jump platform (very short press)
+        // Fallback if post-settled stayed right on the pre-jump platform (very short press).
+        // Ignore stagnant UNKNOWN/phantom frames where neither scoreDelta nor landingRatio moved.
         val preBlk = pre.blockBounds
         val postBlk = postSettled?.blockBounds
         if (postSettled != null && postSettled.pawnFound && preBlk != null && postBlk != null) {
             val samePawn = hypot(postSettled.pawnCenterX - pre.pawnCenterX, postSettled.pawnBaseY - pre.pawnBaseY) < 28f
             val sameBlock = hypot(postBlk.center.x - preBlk.center.x, postBlk.center.y - preBlk.center.y) < 28f
             if (samePawn && sameBlock) {
-                return JumpOutcome.SHORT
+                val frozenModalScreen = landingRatio == null && scoreDelta == null &&
+                    (pre.pawnStance == "UNKNOWN" || pre.pawnPixelCount < 350)
+                return if (!frozenModalScreen && (scoreDelta == 0 || landingRatio != null)) {
+                    JumpOutcome.SHORT
+                } else {
+                    JumpOutcome.UNKNOWN
+                }
             }
         }
 
@@ -191,8 +198,8 @@ object JumpTrainer {
         pawnStance: String = "CENTER",
         scoreDelta: Int? = null
     ): Pair<BotConfig, String> {
-        if (!config.autoTrainEnabled || dNorm < 80f) {
-            return config to "Self-train skipped"
+        if (!config.autoTrainEnabled || dNorm < 80f || outcome == JumpOutcome.UNKNOWN) {
+            return config to if (outcome == JumpOutcome.UNKNOWN) "Unconfirmed frame (skipped)" else "Self-train skipped"
         }
 
         var newK = config.kFactor
@@ -341,7 +348,7 @@ object JumpTrainer {
             landingRatio != null && landingRatio in 0.72f..1.65f -> {
                 val errorRatio = 1.0f - landingRatio
                 val deadCenterTol = if (singlePointOffCenter) 0.012f else 0.025f
-                if (abs(errorRatio) <= deadCenterTol) {
+                if (outcome == JumpOutcome.CENTER && abs(errorRatio) <= deadCenterTol) {
                     if (singlePointOffCenter) {
                         note = String.format(Locale.US, "Edge +1pt (r=%.2f)", landingRatio)
                     } else {
@@ -354,6 +361,12 @@ object JumpTrainer {
                             newBiases[mKey] = (wonMist * 0.60f)
                         }
                     }
+                } else if (outcome == JumpOutcome.SHORT && abs(errorRatio) <= 0.045f) {
+                    // 0pt failure even when touchdown read r≈0.99: nudge gently upward without pretending Dead center
+                    learnedErrorMs = 14f
+                    newK += (10f * globalShare) / dNorm.coerceAtLeast(180f)
+                    newB += 2f * globalShare
+                    note = String.format(Locale.US, "0pt rim miss (r=%.2f) +trim", landingRatio)
                 } else {
                     val safeRatio = landingRatio.coerceIn(0.76f, 1.36f)
                     val idealHoldMs = (holdMs.toFloat() / safeRatio)
@@ -410,8 +423,8 @@ object JumpTrainer {
 
             if (isShortBand && (landingRatio != null || isFatalOut)) {
                 val curDist = newBiases[dKey] ?: 0f
-                val distMin = if (dKey == "DIST:NEAR270") -26f else -42f
-                val distMax = if (dKey == "DIST:NEAR270") 10f else 8f
+                val distMin = if (dKey == "DIST:NEAR270") -24f else -38f
+                val distMax = if (dKey == "DIST:NEAR270") 8f else 6f
                 val stepShare = if (isFatalOut) 0.55f else 0.50f
                 newBiases[dKey] = (curDist + learnedErrorMs * stepShare).coerceIn(distMin, distMax)
             }

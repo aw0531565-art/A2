@@ -1172,7 +1172,7 @@ object BlockVisionAnalyzer {
         val avgR = sumR / count
         val avgG = sumG / count
         val avgB = sumB / count
-        return avgR <= 102 && avgG <= 92 && avgB >= avgR + 6 && (avgB - avgG) >= 8
+        return avgR <= 102 && avgG <= 92 && avgB >= avgR + 6 && (avgB - avgG) >= 8 && avgR >= avgG - 4 && avgB >= 52
     }
 
     private fun isGameOverOrModalOverlay(
@@ -1188,6 +1188,7 @@ object BlockVisionAnalyzer {
         var marginDivergence = 0
         var redCoralHits = 0
         var paleBlueHits = 0
+        var darkDimmedMargins = 0
         val probeFracs = floatArrayOf(0.05f, 0.14f, 0.24f, 0.34f, 0.44f, 0.54f)
         for (f in probeFracs) {
             val ry = (roiHeight * f).roundToInt().coerceIn(0, roiHeight - 1)
@@ -1203,8 +1204,10 @@ object BlockVisionAnalyzer {
                 val b = c and 0xFF
                 if (r > 215 && g in 80..145 && b < 145) redCoralHits++
                 if (r > 185 && g > 195 && b > 225) paleBlueHits++
+                if (r <= 42 && g <= 48 && b <= 64 && (r + g + b) <= 135) darkDimmedMargins++
             }
         }
+        if (darkDimmedMargins >= 10) return true
         val bandStartY = (roiHeight * 0.04f).roundToInt().coerceAtLeast(0)
         val bandEndY = (roiHeight * 0.48f).roundToInt().coerceAtMost(roiHeight - 1)
         var cardCoral = 0
@@ -1905,7 +1908,7 @@ object BlockVisionAnalyzer {
         targetBlock: BlockTrace? = null
     ): SourcePlatformStance {
         val scanStartRel = (pawnBaseY - roiTop - width * 0.075f).roundToInt().coerceIn(0, roiHeight - 1)
-        val scanEndRel = (pawnBaseY - roiTop + width * 0.065f).roundToInt().coerceIn(scanStartRel, roiHeight - 1)
+        val scanEndRel = (pawnBaseY - roiTop + width * 0.044f).roundToInt().coerceIn(scanStartRel, roiHeight - 1)
         val minSrcW = max(max(40, (width * 0.058f).roundToInt()), (pawnWidthEstimate * 1.45f).roundToInt())
         val maxSrcW = (width * 0.44f).roundToInt()
         val maxHalfTravel = (width * 0.28f).roundToInt()
@@ -2008,7 +2011,7 @@ object BlockVisionAnalyzer {
                 if (ry < topSurfaceRelY) {
                     topSurfaceRelY = ry
                 }
-                val spikeLimit = if (bestWidth >= (width * 0.14f).roundToInt()) bestWidth + (width * 0.08f).roundToInt() else maxSrcW
+                val spikeLimit = if (bestWidth >= (width * 0.085f).roundToInt()) bestWidth + (width * 0.07f).roundToInt() else maxSrcW
                 if (rowW in minSrcW..min(maxSrcW, spikeLimit) && rowW > bestWidth + 3) {
                     bestWidth = rowW
                     bestLeftX = lx.toFloat()

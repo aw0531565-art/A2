@@ -47,7 +47,7 @@ class BotPreferencesRepository(private val context: Context) {
 
     private companion object {
         const val MIN_VALID_CALIB_VERSION = 7
-        const val CURRENT_CALIB_VERSION = 13
+        const val CURRENT_CALIB_VERSION = 14
         const val MAX_STORED_RECORDS = 60
     }
 
@@ -63,9 +63,14 @@ class BotPreferencesRepository(private val context: Context) {
     private fun readConfigFromPrefs(prefs: Preferences): BotConfig {
         val storedVersion = prefs[Keys.CALIB_VERSION] ?: 1
         val defaults = BotConfig()
-        val seededNearBiases = mapOf("DIST:NEAR200" to -30f, "DIST:NEAR270" to -14f)
+        val seededBiases = mapOf(
+            "DIST:NEAR200" to -26f,
+            "DIST:NEAR270" to -20f,
+            "STANCE:SIDE_BACK" to 4f,
+            "STANCE:SIDE_FRONT" to -4f
+        )
         if (storedVersion < MIN_VALID_CALIB_VERSION) {
-            return defaults.copy(adaptiveBiasesMs = seededNearBiases)
+            return defaults.copy(adaptiveBiasesMs = seededBiases)
         }
         val modeName = prefs[Keys.FORMULA_MODE] ?: FormulaMode.LINEAR.name
         val mode = runCatching { FormulaMode.valueOf(modeName) }.getOrDefault(FormulaMode.LINEAR)
@@ -78,17 +83,18 @@ class BotPreferencesRepository(private val context: Context) {
         val rawBiases = decodeBiases(prefs[Keys.ADAPTIVE_BIASES_JSON])
         val biases = LinkedHashMap<String, Float>(rawBiases.size)
         rawBiases.forEach { (k, v) ->
-            if (k != "BLK:MEDIUM") {
+            if (k != "BLK:MEDIUM" && !(storedVersion < CURRENT_CALIB_VERSION && k.contains(":UNKNOWN:"))) {
                 biases[k] = when {
                     storedVersion < CURRENT_CALIB_VERSION && k == "BLK:MINI" -> v.coerceIn(-4f, 6f)
                     storedVersion < CURRENT_CALIB_VERSION && k == "BLK:NARROW" -> v.coerceIn(-6f, 4f)
-                    storedVersion < CURRENT_CALIB_VERSION && k == "DIST:NEAR270" -> v.coerceIn(-20f, -8f)
-                    storedVersion < CURRENT_CALIB_VERSION && k == "DIST:NEAR200" -> v.coerceIn(-38f, -24f)
-                    storedVersion < CURRENT_CALIB_VERSION && k.startsWith("MIST:") -> v.coerceIn(-10f, 10f)
-                    storedVersion < CURRENT_CALIB_VERSION && k == "STANCE:SIDE_BACK" -> v.coerceIn(-4f, 6f)
-                    storedVersion < CURRENT_CALIB_VERSION && k.startsWith("STANCE:") -> v.coerceIn(-10f, 6f)
-                    k == "DIST:NEAR270" -> v.coerceIn(-26f, 10f)
-                    k == "DIST:NEAR200" -> v.coerceIn(-42f, 8f)
+                    storedVersion < CURRENT_CALIB_VERSION && k == "DIST:NEAR270" -> v.coerceIn(-23f, -14f)
+                    storedVersion < CURRENT_CALIB_VERSION && k == "DIST:NEAR200" -> v.coerceIn(-30f, -23f)
+                    storedVersion < CURRENT_CALIB_VERSION && k.startsWith("MIST:") -> v.coerceIn(-8f, 8f)
+                    storedVersion < CURRENT_CALIB_VERSION && k == "STANCE:SIDE_BACK" -> v.coerceIn(0f, 8f)
+                    storedVersion < CURRENT_CALIB_VERSION && k == "STANCE:SIDE_FRONT" -> v.coerceIn(-8f, 2f)
+                    storedVersion < CURRENT_CALIB_VERSION && k.startsWith("STANCE:") -> v.coerceIn(-8f, 6f)
+                    k == "DIST:NEAR270" -> v.coerceIn(-24f, 8f)
+                    k == "DIST:NEAR200" -> v.coerceIn(-38f, 6f)
                     k.startsWith("SIG:MEDIUM_") -> v.coerceIn(-12f, 12f)
                     k.startsWith("SIG:") -> v.coerceIn(-16f, 16f)
                     k.startsWith("STANCE:") -> v.coerceIn(-14f, 14f)
@@ -99,22 +105,23 @@ class BotPreferencesRepository(private val context: Context) {
         }
         if (storedVersion < CURRENT_CALIB_VERSION || !prefs.contains(Keys.ADAPTIVE_BIASES_JSON)) {
             if (storedVersion < CURRENT_CALIB_VERSION) {
-                biases["DIST:NEAR200"] = (biases["DIST:NEAR200"] ?: -30f).coerceIn(-38f, -24f)
-                biases["DIST:NEAR270"] = (biases["DIST:NEAR270"] ?: -14f).coerceIn(-20f, -8f)
+                biases["DIST:NEAR200"] = (biases["DIST:NEAR200"] ?: -26f).coerceIn(-30f, -23f)
+                biases["DIST:NEAR270"] = (biases["DIST:NEAR270"] ?: -20f).coerceIn(-23f, -14f)
+                biases["STANCE:SIDE_BACK"] = (biases["STANCE:SIDE_BACK"] ?: 4f).coerceIn(0f, 8f)
+                biases["STANCE:SIDE_FRONT"] = (biases["STANCE:SIDE_FRONT"] ?: -4f).coerceIn(-8f, 2f)
             } else {
-                biases.putIfAbsent("DIST:NEAR200", -30f)
-                biases.putIfAbsent("DIST:NEAR270", -14f)
+                seededBiases.forEach { (k, v) -> biases.putIfAbsent(k, v) }
             }
         }
         val rawK = prefs[Keys.K_FACTOR] ?: defaults.kFactor
         val rawB = prefs[Keys.OFFSET_MS] ?: defaults.offsetMs
         val migratedK = if (storedVersion < CURRENT_CALIB_VERSION) {
-            rawK.coerceIn(1.370f, 1.378f)
+            rawK.coerceIn(1.384f, 1.391f)
         } else {
             rawK
         }
         val migratedB = if (storedVersion < CURRENT_CALIB_VERSION) {
-            rawB.coerceIn(28f, 33f)
+            rawB.coerceIn(31f, 33.5f)
         } else {
             rawB
         }

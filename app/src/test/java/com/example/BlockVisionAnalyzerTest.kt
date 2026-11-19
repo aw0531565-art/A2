@@ -913,6 +913,48 @@ class BlockVisionAnalyzerTest {
             darkRes.pawnBaseY in 908f..945f
         )
     }
+
+    @Test
+    fun `rejects #142-#143 dark dimmed Game Over overlay #0E111D and cold slate UI artifact #1A2630`() {
+        val w = 720
+        val h = 1600
+        val config = BotConfig(roiTopFraction = 0.28f, roiBottomFraction = 0.72f)
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+
+        // Case 1: Dimmed dark Game Over modal backdrop (#0E111D -> #151C27) with UI button #1A2630 & gold badge #FEEA8F
+        val darkOverBmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        val darkOverCanvas = android.graphics.Canvas(darkOverBmp)
+        val bgShader = android.graphics.LinearGradient(
+            0f, 448f, 0f, 1152f,
+            intArrayOf(android.graphics.Color.rgb(0x0E, 0x11, 0x1D), android.graphics.Color.rgb(0x15, 0x1C, 0x27)),
+            null,
+            android.graphics.Shader.TileMode.CLAMP
+        )
+        darkOverCanvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), android.graphics.Paint().apply { shader = bgShader })
+        paint.color = android.graphics.Color.rgb(0x1A, 0x26, 0x30)
+        darkOverCanvas.drawRect(442f, 975f, 476f, 1045f, paint)
+        paint.color = android.graphics.Color.rgb(0xFE, 0xEA, 0x8F)
+        darkOverCanvas.drawRect(271f, 895f, 333f, 935f, paint)
+
+        val darkOverRes = BlockVisionAnalyzer.analyze(darkOverBmp, config)
+        darkOverBmp.recycle()
+        assertTrue("Dark dimmed #0E111D Game Over screen must NOT detect a pawn: ${darkOverRes.statusMessage}", !darkOverRes.pawnFound)
+        assertTrue("Dark dimmed #0E111D Game Over screen must NOT detect a block", !darkOverRes.blockFound)
+
+        // Case 2: Cold slate #1A2630 shape with a gold patch on normal gameplay sky (#475491) must fail cool-purple check
+        val slateBmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        val slateCanvas = android.graphics.Canvas(slateBmp)
+        slateCanvas.drawColor(android.graphics.Color.rgb(0x47, 0x54, 0x91))
+        paint.color = android.graphics.Color.rgb(0x1A, 0x26, 0x30)
+        slateCanvas.drawRect(442f, 955f, 476f, 1045f, paint)
+        paint.color = android.graphics.Color.rgb(0xD2, 0xAF, 0x62)
+        slateCanvas.drawRect(448f, 982f, 470f, 991f, paint)
+
+        val slateRes = BlockVisionAnalyzer.analyze(slateBmp, config)
+        slateBmp.recycle()
+        assertTrue("Cold teal-slate #1A2630 UI artifact must NOT lock as purple pawn", !slateRes.pawnFound)
+    }
 }
+
 
 

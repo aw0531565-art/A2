@@ -734,4 +734,50 @@ class JumpTrainerTest {
             after254.kFactor - 1.370f <= 0.0031f
         )
     }
+
+    @Test
+    fun `stagnant UNKNOWN frame skips Short fallback and 0pt r=0_99 never claims Dead center`() {
+        val cfg = BotConfig(kFactor = 1.388f, offsetMs = 32.5f, autoTrainEnabled = true)
+        val stagnantPre = makeResult(px = 459f, py = 1043f, bx = 302f, by = 913f, dRaw = 203f, dNorm = 305f)
+            .copy(pawnPixelCount = 223, pawnStance = "UNKNOWN", targetBlockProfile = "MINI")
+        val stagnantPost = stagnantPre.copy()
+
+        val stagnantOutcome = JumpTrainer.classifyOutcome(
+            pre = stagnantPre,
+            landingRatio = null,
+            postSettled = stagnantPost,
+            scoreDelta = null
+        )
+        assertEquals("Unmoved UNKNOWN modal frame must classify as UNKNOWN, not SHORT", JumpOutcome.UNKNOWN, stagnantOutcome)
+
+        val (afterUnknown, noteUnknown) = JumpTrainer.applyOnlineUpdate(
+            config = cfg,
+            dNorm = 305f,
+            holdMs = 451L,
+            outcome = stagnantOutcome,
+            landingRatio = null,
+            history = emptyList(),
+            targetProfile = "MINI",
+            targetColorGroup = "PINK",
+            pawnStance = "UNKNOWN"
+        )
+        assertEquals("UNKNOWN frame must keep kFactor unchanged ($noteUnknown)", cfg.kFactor, afterUnknown.kFactor, 0.0001f)
+        assertEquals("UNKNOWN frame must keep adaptiveBiases untouched", cfg.adaptiveBiasesMs, afterUnknown.adaptiveBiasesMs)
+
+        // Reproduces #141: SHORT (scoreDelta=0) with r=0.99 must NOT label Dead center
+        val (afterRimMiss, rimNote) = JumpTrainer.applyOnlineUpdate(
+            config = cfg,
+            dNorm = 553f,
+            holdMs = 796L,
+            outcome = JumpOutcome.SHORT,
+            landingRatio = 0.99f,
+            history = emptyList(),
+            targetProfile = "NARROW",
+            targetColorGroup = "PURPLE",
+            pawnStance = "SIDE_BACK",
+            scoreDelta = 0
+        )
+        assertTrue("0pt SHORT with r=0.99 must never claim Dead center ($rimNote)", !rimNote.contains("Dead center"))
+        assertTrue("0pt SHORT with r=0.99 should nudge calibration gently ($rimNote)", afterRimMiss.kFactor >= cfg.kFactor)
+    }
 }
