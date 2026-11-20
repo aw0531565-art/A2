@@ -114,7 +114,7 @@ object JumpTrainer {
         val uy = landing.pawnBaseY - pre.pawnBaseY
         val rDot = (ux * vx + uy * vy) / distSq
         val rX = if (abs(vx) >= dist * 0.72f) ux / vx else rDot
-        val ratio = if (abs(vx) >= dist * 0.72f && rX in 0.25f..1.85f && uy < rX * vy - 3f && rDot > rX + 0.02f) {
+        val ratio = if (rDot > 1.05f && abs(vx) >= dist * 0.72f && rX in 0.25f..1.85f && uy < rX * vy - 3f && rDot > rX + 0.02f) {
             rX
         } else {
             rDot
@@ -125,6 +125,33 @@ object JumpTrainer {
         val perpFraction = cross / dist
         if (ratio !in 0.25f..1.85f || perpFraction > 0.65f) return null
         return ratio
+    }
+
+    /**
+     * Measures the settled pawn's exact forward/backward offset on the destination block after
+     * camera panning completes (zero flight height, zero pan velocity).
+     */
+    fun computeSettledLandingRatio(
+        pre: VisionAnalysisResult,
+        postSettled: VisionAnalysisResult?,
+        scoreDelta: Int?
+    ): Float? {
+        if (scoreDelta == null || scoreDelta < 1) return null
+        val targetBlock = pre.blockBounds ?: return null
+        if (!pre.pawnFound || postSettled == null || !postSettled.pawnFound) return null
+        if (postSettled.pawnStance == "UNKNOWN" || postSettled.sourceWidthPx <= 0f || postSettled.sourceCenterX <= 0f) {
+            return null
+        }
+        val widthTol = maxOf(24f, targetBlock.widthPx * 0.22f)
+        if (abs(postSettled.sourceWidthPx - targetBlock.widthPx) > widthTol) return null
+        if (abs(postSettled.pawnCenterX - postSettled.sourceCenterX) > postSettled.sourceWidthPx * 0.46f) return null
+
+        val vx = targetBlock.center.x - pre.pawnCenterX
+        val dist = pre.rawDistancePx
+        if (dist < 40f || abs(vx) < dist * 0.72f) return null
+
+        val offsetRatio = ((postSettled.pawnCenterX - postSettled.sourceCenterX) / vx).coerceIn(-0.35f, 0.35f)
+        return (1.0f + offsetRatio).coerceIn(0.65f, 1.35f)
     }
 
     fun classifyOutcome(
@@ -150,9 +177,9 @@ object JumpTrainer {
         if (scoreDelta != null && scoreDelta >= 2 && postSettled?.pawnFound == true) {
             return JumpOutcome.CENTER
         }
-        // Confirmed +1pt safe landing with moderate landingRatio (e.g. 1.12 on short hops) is CENTER, not PAST_CENTER
+        // Confirmed +1pt safe landing with plausible ratio is CENTER, not SHORT/PAST_CENTER
         if (scoreDelta != null && scoreDelta >= 1 && postSettled?.pawnFound == true &&
-            landingRatio != null && landingRatio in 0.84f..1.16f
+            landingRatio != null && landingRatio in 0.78f..1.18f
         ) {
             return JumpOutcome.CENTER
         }
@@ -384,13 +411,14 @@ object JumpTrainer {
                     val idealHoldMs = (holdMs.toFloat() / safeRatio)
                         .coerceIn(config.minPressMs.toFloat(), config.maxPressMs.toFloat())
                     val gain = when {
-                        singlePointOffCenter -> if (outcome == JumpOutcome.SHORT || outcome == JumpOutcome.PAST_CENTER) 0.34f else 0.30f
+                        singlePointOffCenter -> if (outcome == JumpOutcome.SHORT || outcome == JumpOutcome.PAST_CENTER) 0.28f else 0.24f
                         abs(errorRatio) <= 0.060f -> 0.18f
                         outcome == JumpOutcome.SHORT || outcome == JumpOutcome.PAST_CENTER -> 0.34f
                         else -> 0.26f
                     }
                     // Prevent a single noisy jump (or long-range camera pan lag) from slashing k/STANCE
-                    var deltaMs = ((idealHoldMs - holdMs.toFloat()) * gain).coerceIn(-28f, 28f)
+                    val rawDelta = (idealHoldMs - holdMs.toFloat()) * gain
+                    var deltaMs = if (singlePointOffCenter) rawDelta.coerceIn(-18f, 18f) else rawDelta.coerceIn(-28f, 28f)
                     val panLagZone = singlePointOffCenter && dNorm >= 500f && landingRatio in 0.92f..0.97f
                     if (panLagZone) {
                         deltaMs *= 0.42f
@@ -504,7 +532,7 @@ object JumpTrainer {
                     val isBullseye = (rec.scoreDelta ?: 0) >= 2 && rec.outcome == JumpOutcome.CENTER
                     val hasCleanRatio = (rec.outcome == JumpOutcome.CENTER || rec.outcome == JumpOutcome.SHORT || rec.outcome == JumpOutcome.PAST_CENTER) &&
                         rec.landingRatio != null &&
-                        rec.landingRatio in 0.72f..1.40f
+                        rec.landingRatio in 0.90f..1.14f
                     val baseOk = rec.normalizedDistancePx >= 240f &&
                         rec.targetProfile == "MEDIUM" &&
                         (rec.pawnStance == "CENTER" || rec.pawnStance == "UNKNOWN")
@@ -519,8 +547,8 @@ object JumpTrainer {
                 if (maxD - minD >= 100f) {
                     val fitted = weightedLinearFit(fitSamples, config)
                     if (fitted != null) {
-                        newK = newK * 0.88f + fitted.first * 0.12f
-                        newB = newB * 0.88f + fitted.second * 0.12f
+                        newK = newK * 0.94f + fitted.first * 0.06f
+                        newB = newB * 0.94f + fitted.second * 0.06f
                         note += " + Huber"
                     }
                 }

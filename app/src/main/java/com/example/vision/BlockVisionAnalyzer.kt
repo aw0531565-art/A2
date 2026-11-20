@@ -71,7 +71,8 @@ object BlockVisionAnalyzer {
         bitmap: Bitmap,
         config: BotConfig,
         excludedRect: Rect? = null,
-        preferredTargetHint: PointF2D? = null
+        preferredTargetHint: PointF2D? = null,
+        expectedSourceWidthPx: Float? = null
     ): VisionAnalysisResult {
         val startNs = System.nanoTime()
         val width = bitmap.width
@@ -245,7 +246,8 @@ object BlockVisionAnalyzer {
             pawnWidthEstimate = pawnWidthEstimate,
             targetCenterX = pawnCenterX,
             excludedRect = excludedRect,
-            thresholdSq = translucentThresholdSq
+            thresholdSq = translucentThresholdSq,
+            expectedSourceWidthPx = expectedSourceWidthPx
         )
 
         var block = scanForTargetBlock(
@@ -434,7 +436,8 @@ object BlockVisionAnalyzer {
             targetCenterX = blockCenterX,
             excludedRect = excludedRect,
             thresholdSq = translucentThresholdSq,
-            targetBlock = block
+            targetBlock = block,
+            expectedSourceWidthPx = expectedSourceWidthPx
         )
 
         // Step 4: Distance & Contextual Duration Calculation
@@ -1905,13 +1908,18 @@ object BlockVisionAnalyzer {
         targetCenterX: Float,
         excludedRect: Rect?,
         thresholdSq: Int,
-        targetBlock: BlockTrace? = null
+        targetBlock: BlockTrace? = null,
+        expectedSourceWidthPx: Float? = null
     ): SourcePlatformStance {
-        val scanStartRel = (pawnBaseY - roiTop - width * 0.068f).roundToInt().coerceIn(0, roiHeight - 1)
-        val scanEndRel = (pawnBaseY - roiTop + width * 0.025f).roundToInt().coerceIn(scanStartRel, roiHeight - 1)
+        val scanStartRel = (pawnBaseY - roiTop - width * 0.032f).roundToInt().coerceIn(0, roiHeight - 1)
+        val scanEndRel = (pawnBaseY - roiTop + width * 0.036f).roundToInt().coerceIn(scanStartRel, roiHeight - 1)
         val minSrcW = max(max(40, (width * 0.058f).roundToInt()), (pawnWidthEstimate * 1.45f).roundToInt())
-        val maxSrcW = (width * 0.40f).roundToInt()
-        val maxHalfTravel = (width * 0.205f).roundToInt()
+        val maxSrcW = expectedSourceWidthPx?.let {
+            min((width * 0.40f).roundToInt(), (it * 1.18f).roundToInt())
+        } ?: (width * 0.40f).roundToInt()
+        val maxHalfTravel = expectedSourceWidthPx?.let {
+            min((width * 0.235f).roundToInt(), (it * 0.68f).roundToInt())
+        } ?: (width * 0.235f).roundToInt()
         val bridgeHalf = max(12, (pawnWidthEstimate * 0.56f).roundToInt())
         val srcThresholdSq = max(thresholdSq, 1150)
 
@@ -1928,7 +1936,7 @@ object BlockVisionAnalyzer {
         var bestRightX = pawnCenterX
         var bestWidestRelY = (pawnBaseY - roiTop).roundToInt()
         var topSurfaceRelY = Int.MAX_VALUE
-        var seedX = pawnCenterX.roundToInt().coerceIn(marginX, width - marginX - 1)
+        val anchorBaseX = pawnCenterX.roundToInt().coerceIn(marginX, width - marginX - 1)
 
         val topLeftSky = pixels[marginX / 2]
         val topRightSky = pixels[width - 1 - marginX / 2]
@@ -1939,22 +1947,22 @@ object BlockVisionAnalyzer {
             val rawLeftBg = pixels[rowOff + marginX / 2]
             val rawRightBg = pixels[rowOff + width - 1 - marginX / 2]
             val (leftBg, rightBg) = cleanRowSkyPair(rawLeftBg, rawRightBg, topLeftSky, topRightSky)
-            val pawnInFootBand = absY >= (pawnBaseY - width * 0.065f) && absY <= (pawnBaseY + 8f)
+            val pawnInFootBand = absY >= (pawnBaseY - width * 0.055f) && absY <= (pawnBaseY + 12f)
 
-            var anchorX = seedX
-            if (!pawnInFootBand || abs(anchorX - pawnCenterX) > bridgeHalf || entersTargetBlock(anchorX, ry) ||
+            var anchorX = anchorBaseX
+            if (!pawnInFootBand || entersTargetBlock(anchorX, ry) ||
                 !isForegroundPixel(pixels[rowOff + anchorX], leftBg, rightBg, anchorX, width, srcThresholdSq / 2)
             ) {
                 var foundAnchor = -1
                 for (d in 0..20 step 2) {
-                    val xR = (seedX + d).coerceAtMost(width - marginX - 1)
+                    val xR = (anchorBaseX + d).coerceAtMost(width - marginX - 1)
                     if (!entersTargetBlock(xR, ry) && !isExcluded(xR, absY, excludedRect) &&
                         isValidBlockPixel(pixels[rowOff + xR], leftBg, rightBg, xR, width, srcThresholdSq, rejectDarkShadows = true)
                     ) {
                         foundAnchor = xR
                         break
                     }
-                    val xL = (seedX - d).coerceAtLeast(marginX)
+                    val xL = (anchorBaseX - d).coerceAtLeast(marginX)
                     if (!entersTargetBlock(xL, ry) && !isExcluded(xL, absY, excludedRect) &&
                         isValidBlockPixel(pixels[rowOff + xL], leftBg, rightBg, xL, width, srcThresholdSq, rejectDarkShadows = true)
                     ) {
@@ -2008,17 +2016,19 @@ object BlockVisionAnalyzer {
             }
 
             val rowW = rx - lx
-            if (rowW >= 18 && abs((lx + rx) * 0.5f - pawnCenterX) <= max(rowW * 0.58f, bridgeHalf * 1.4f)) {
+            if (rowW >= 18 &&
+                pawnCenterX in (lx - 4f)..(rx + 4f) &&
+                abs((lx + rx) * 0.5f - pawnCenterX) <= max(rowW * 0.52f, bridgeHalf * 1.2f)
+            ) {
                 if (ry < topSurfaceRelY) {
                     topSurfaceRelY = ry
                 }
-                val spikeLimit = if (bestWidth >= (width * 0.085f).roundToInt()) bestWidth + (width * 0.07f).roundToInt() else maxSrcW
+                val spikeLimit = if (bestWidth >= (width * 0.085f).roundToInt()) bestWidth + (width * 0.14f).roundToInt() else maxSrcW
                 if (rowW in minSrcW..min(maxSrcW, spikeLimit) && rowW > bestWidth + 3) {
                     bestWidth = rowW
                     bestLeftX = lx.toFloat()
                     bestRightX = rx.toFloat()
                     bestWidestRelY = ry
-                    seedX = ((lx + rx) / 2).coerceIn(marginX, width - marginX - 1)
                 }
             }
             ry += 2

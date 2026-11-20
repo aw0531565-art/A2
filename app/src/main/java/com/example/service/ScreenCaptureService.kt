@@ -616,19 +616,19 @@ class ScreenCaptureService : Service() {
         // Flush any frame from during the hold so post-jump burst captures the real touchdown
         clearCachedFrame()
 
-        // Sample right at touchdown: avoid premature mid-air capture on short/mid holds and camera pan on long holds
-        val burst1DelayMs = (420L + (holdMs * 0.016f).roundToLong()).coerceIn(424L, 436L)
+        // Sample right at touchdown before camera pan starts (with 55ms follow-up burst)
+        val burst1DelayMs = (392L + (holdMs * 0.018f).roundToLong()).coerceIn(396L, 414L)
         delay(burst1DelayMs)
         val burst1 = analyzeLatestFrameWithDiag(config, overlayRect, allowCached = false)?.first
         val r1 = JumpTrainer.computeLandingRatio(stableResult, burst1)
 
-        delay(70L)
+        delay(55L)
         val burst2Triple = analyzeLatestFrameWithSnapshot(config, overlayRect, allowCached = true)
         val burst2 = burst2Triple?.first
         val r2 = JumpTrainer.computeLandingRatio(stableResult, burst2)
         lastTouchdownSnapshot = burst2Triple?.third
 
-        val landingRatio = when {
+        val burstRatio = when {
             r1 != null && r2 != null -> when {
                 abs(r1 - r2) <= 0.05f -> (r1 + r2) / 2f
                 r1 > 1.07f && r2 in 0.83f..1.08f && holdMs < 660L -> r2
@@ -642,10 +642,16 @@ class ScreenCaptureService : Service() {
 
         // Wait remaining cooldown for camera pan / Game Over popup to finish settling
         val cooldownJitter = if (config.humanizeTiming) kotlin.random.Random.nextLong(-45L, 165L) else 0L
-        val elapsedWaitMs = burst1DelayMs + 70L
+        val elapsedWaitMs = burst1DelayMs + 55L
         val remainingCooldown = (config.jumpCooldownMs - elapsedWaitMs + cooldownJitter).coerceAtLeast(320L)
         delay(remainingCooldown)
-        val postSettled = analyzeLatestFrameWithDiag(config, overlayRect, allowCached = true)?.first
+        val expectedLandedWidth = stableResult.blockBounds?.widthPx
+        val postSettled = analyzeLatestFrameWithDiag(
+            config = config,
+            overlayRect = overlayRect,
+            allowCached = true,
+            expectedSourceWidthPx = expectedLandedWidth
+        )?.first
 
         val preScore = stableResult.scoreReading
         val postScore = postSettled?.scoreReading
@@ -653,6 +659,12 @@ class ScreenCaptureService : Service() {
             postScore - preScore
         } else {
             null
+        }
+        val settledRatio = JumpTrainer.computeSettledLandingRatio(stableResult, postSettled, scoreDelta)
+        val landingRatio = if (scoreDelta != null && scoreDelta >= 1 && settledRatio != null) {
+            settledRatio
+        } else {
+            burstRatio
         }
 
         val outcome = JumpTrainer.classifyOutcome(stableResult, landingRatio, postSettled, scoreDelta)
@@ -751,11 +763,17 @@ class ScreenCaptureService : Service() {
         config: BotConfig,
         overlayRect: android.graphics.Rect?,
         allowCached: Boolean,
-        touchdownSnapshot: BlockVisionAnalyzer.UpperRoiSnapshot? = null
+        touchdownSnapshot: BlockVisionAnalyzer.UpperRoiSnapshot? = null,
+        expectedSourceWidthPx: Float? = null
     ): Pair<VisionAnalysisResult, BlockVisionAnalyzer.FrameDiagnostics>? {
         val bitmap = acquireLatestBitmapCopy(allowCached) ?: return null
         return try {
-            var res = BlockVisionAnalyzer.analyze(bitmap, config, overlayRect)
+            var res = BlockVisionAnalyzer.analyze(
+                bitmap = bitmap,
+                config = config,
+                excludedRect = overlayRect,
+                expectedSourceWidthPx = expectedSourceWidthPx
+            )
             if (touchdownSnapshot != null && res.pawnFound) {
                 val hint = BlockVisionAnalyzer.detectNewlyAppearedHint(
                     prevSnapshot = touchdownSnapshot,
@@ -764,7 +782,13 @@ class ScreenCaptureService : Service() {
                     currPawnY = res.pawnBaseY
                 )
                 if (hint != null) {
-                    res = BlockVisionAnalyzer.analyze(bitmap, config, overlayRect, preferredTargetHint = hint)
+                    res = BlockVisionAnalyzer.analyze(
+                        bitmap = bitmap,
+                        config = config,
+                        excludedRect = overlayRect,
+                        preferredTargetHint = hint,
+                        expectedSourceWidthPx = expectedSourceWidthPx
+                    )
                 }
             }
             val diag = BlockVisionAnalyzer.sampleFrameDiagnostics(

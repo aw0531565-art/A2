@@ -815,4 +815,37 @@ class JumpTrainerTest {
             kotlin.math.abs(afterNarrowTrim.kFactor - cfg.kFactor) <= 0.002f
         )
     }
+
+    @Test
+    fun `computeSettledLandingRatio measures exact forward and backward offset on destination block`() {
+        // Rightward jump: pre pawn (220, 950) -> target block (520, 777), vx=+300, width=260
+        val preRight = makeResult(px = 220f, py = 950f, bx = 520f, by = 777f, dRaw = 346.3f, dNorm = 519f)
+
+        // Settled 24px short (left of settled block center 250): 1 - 24/300 = 0.92
+        val postShort = makeResult(px = 226f, py = 930f)
+            .copy(sourceCenterX = 250f, sourceWidthPx = 256f, pawnStance = "SIDE_BACK")
+        val shortRatio = JumpTrainer.computeSettledLandingRatio(preRight, postShort, scoreDelta = 1)
+        assertNotNull(shortRatio)
+        assertEquals(0.92f, shortRatio!!, 0.01f)
+
+        // Settled 24px past center (right of settled block center 250): 1 + 24/300 = 1.08
+        val postLong = makeResult(px = 274f, py = 930f)
+            .copy(sourceCenterX = 250f, sourceWidthPx = 256f, pawnStance = "SIDE_FRONT")
+        val longRatio = JumpTrainer.computeSettledLandingRatio(preRight, postLong, scoreDelta = 1)
+        assertNotNull(longRatio)
+        assertEquals(1.08f, longRatio!!, 0.01f)
+
+        // Leftward jump: vx = -300; pawn landing 21px left of block center is PAST center (1 + 21/300 = 1.07)
+        val preLeft = makeResult(px = 520f, py = 950f, bx = 220f, by = 777f, dRaw = 346.3f, dNorm = 519f)
+        val postLeftPast = makeResult(px = 469f, py = 930f)
+            .copy(sourceCenterX = 490f, sourceWidthPx = 252f, pawnStance = "SIDE_FRONT")
+        val leftPastRatio = JumpTrainer.computeSettledLandingRatio(preLeft, postLeftPast, scoreDelta = 1)
+        assertNotNull(leftPastRatio)
+        assertEquals(1.07f, leftPastRatio!!, 0.01f)
+
+        // Mismatched source width (e.g. shadow bleed) must return null and fall back to burst ratio
+        val postMismatched = makeResult(px = 250f, py = 930f)
+            .copy(sourceCenterX = 250f, sourceWidthPx = 120f, pawnStance = "CENTER")
+        assertNull(JumpTrainer.computeSettledLandingRatio(preRight, postMismatched, scoreDelta = 1))
+    }
 }
