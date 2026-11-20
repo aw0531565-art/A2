@@ -40,6 +40,7 @@ class BotPreferencesRepository(private val context: Context) {
         val MAX_PRESS_MS = longPreferencesKey("max_press_ms")
         val AUTO_TRAIN_ENABLED = booleanPreferencesKey("auto_train_enabled")
         val HUMANIZE_TIMING = booleanPreferencesKey("humanize_timing")
+        val ULTRA_PRECISION_MODE = booleanPreferencesKey("ultra_precision_mode")
         val ADAPTIVE_BIASES_JSON = stringPreferencesKey("adaptive_biases_json")
         val TRAINING_HISTORY_JSON = stringPreferencesKey("training_history_json")
         val CALIB_VERSION = intPreferencesKey("calib_version")
@@ -146,6 +147,7 @@ class BotPreferencesRepository(private val context: Context) {
             maxPressMs = prefs[Keys.MAX_PRESS_MS] ?: defaults.maxPressMs,
             autoTrainEnabled = prefs[Keys.AUTO_TRAIN_ENABLED] ?: defaults.autoTrainEnabled,
             humanizeTiming = prefs[Keys.HUMANIZE_TIMING] ?: defaults.humanizeTiming,
+            ultraPrecisionMode = prefs[Keys.ULTRA_PRECISION_MODE] ?: defaults.ultraPrecisionMode,
             adaptiveBiasesMs = biases
         )
     }
@@ -171,6 +173,7 @@ class BotPreferencesRepository(private val context: Context) {
             prefs[Keys.MAX_PRESS_MS] = updated.maxPressMs
             prefs[Keys.AUTO_TRAIN_ENABLED] = updated.autoTrainEnabled
             prefs[Keys.HUMANIZE_TIMING] = updated.humanizeTiming
+            prefs[Keys.ULTRA_PRECISION_MODE] = updated.ultraPrecisionMode
             prefs[Keys.ADAPTIVE_BIASES_JSON] = encodeBiases(updated.adaptiveBiasesMs)
         }
     }

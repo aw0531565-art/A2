@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ScreenShare
 import androidx.compose.material.icons.filled.AccessibilityNew
+import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.NotificationsActive
@@ -100,6 +101,7 @@ fun DashboardScreen(
     onTapYChange: (Float) -> Unit,
     onToggleAutoTrain: (Boolean) -> Unit,
     onToggleHumanizeTiming: (Boolean) -> Unit,
+    onToggleUltraPrecision: (Boolean) -> Unit,
     onManualFeedback: (Boolean) -> Unit,
     onBuildReport: () -> String,
     onClearTrainingHistory: () -> Unit,
@@ -250,6 +252,7 @@ fun DashboardScreen(
                     isDebugVisionEnabled = isDebugVisionEnabled,
                     onToggleDebugVision = onToggleDebugVision,
                     onToggleHumanizeTiming = onToggleHumanizeTiming,
+                    onToggleUltraPrecision = onToggleUltraPrecision,
                     onToggleAutoLoop = onToggleAutoLoop,
                     onTriggerSingleStep = onTriggerSingleStep,
                     onCooldownChange = onCooldownChange,
@@ -463,6 +466,7 @@ private fun AutomationControlsCard(
     isDebugVisionEnabled: Boolean,
     onToggleDebugVision: () -> Unit,
     onToggleHumanizeTiming: (Boolean) -> Unit,
+    onToggleUltraPrecision: (Boolean) -> Unit,
     onToggleAutoLoop: () -> Unit,
     onTriggerSingleStep: () -> Unit,
     onCooldownChange: (Long) -> Unit,
@@ -608,6 +612,40 @@ private fun AutomationControlsCard(
                     checked = config.humanizeTiming,
                     onCheckedChange = onToggleHumanizeTiming,
                     modifier = Modifier.testTag("switch_humanize_timing")
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.CenterFocusStrong,
+                    contentDescription = "Ultra-Precision Mode (Slow)",
+                    tint = if (config.ultraPrecisionMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Ultra-Precision Mode (Slow)",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Multi-frame averaging, edge-snapped contour & slow settle check to prevent +1pt misses",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = config.ultraPrecisionMode,
+                    onCheckedChange = onToggleUltraPrecision,
+                    modifier = Modifier.testTag("switch_ultra_precision")
                 )
             }
 

@@ -154,6 +154,73 @@ object JumpTrainer {
         return (1.0f + offsetRatio).coerceIn(0.65f, 1.35f)
     }
 
+    /**
+     * Averages a cluster of recent pre-jump frames using trimmed-mean (dropping the min/max
+     * extremes when >= 4 frames are available) so sub-pixel raster jitter cancels out before holding.
+     */
+    fun computeMultiFrameConsensus(
+        frames: List<VisionAnalysisResult>,
+        config: BotConfig
+    ): VisionAnalysisResult? {
+        val valid = frames.filter { it.pawnFound && it.blockFound && it.blockBounds != null }
+        if (valid.isEmpty()) return null
+        if (valid.size == 1) return valid.first()
+
+        fun trimmedMean(values: List<Float>): Float {
+            if (values.size <= 2) return values.average().toFloat()
+            val sorted = values.sorted()
+            val slice = if (sorted.size >= 4) sorted.subList(1, sorted.size - 1) else sorted
+            return slice.average().toFloat()
+        }
+
+        val anchor = valid.last()
+        val pawnX = trimmedMean(valid.map { it.pawnCenterX })
+        val pawnY = trimmedMean(valid.map { it.pawnBaseY })
+        val blockX = trimmedMean(valid.map { it.blockBounds!!.center.x })
+        val blockY = trimmedMean(valid.map { it.blockBounds!!.center.y })
+        val blockW = trimmedMean(valid.map { it.blockBounds!!.widthPx })
+        val blockH = trimmedMean(valid.map { it.blockBounds!!.heightPx })
+        val srcLeftX = trimmedMean(valid.map { it.sourceLeftX })
+        val srcRightX = trimmedMean(valid.map { it.sourceRightX })
+        val srcCenterX = trimmedMean(valid.map { it.sourceCenterX })
+        val srcCenterY = trimmedMean(valid.map { it.sourceCenterY })
+        val srcWidthPx = trimmedMean(valid.map { it.sourceWidthPx })
+
+        val rawDist = hypot(blockX - pawnX, blockY - pawnY)
+        val scaleTo1080 = 1080f / anchor.imageWidth.coerceAtLeast(1).toFloat()
+        val normDist = rawDist * scaleTo1080
+        val contextBiasMs = computeContextAdjustmentMs(
+            config = config,
+            normalizedDistancePx = normDist,
+            targetBlockProfile = anchor.targetBlockProfile,
+            targetColorGroup = anchor.targetColorGroup,
+            pawnStance = anchor.pawnStance
+        )
+        val baseDurationMs = com.example.vision.BlockVisionAnalyzer.computeDurationMs(normDist, config)
+        val durationMs = (baseDurationMs + contextBiasMs).coerceIn(config.minPressMs, config.maxPressMs)
+        val anchorBounds = anchor.blockBounds!!
+
+        return anchor.copy(
+            pawnCenterX = pawnX,
+            pawnBaseY = pawnY,
+            blockBounds = anchorBounds.copy(
+                center = com.example.model.PointF2D(blockX, blockY),
+                widthPx = blockW,
+                heightPx = blockH
+            ),
+            rawDistancePx = rawDist,
+            normalizedDistancePx = normDist,
+            computedDurationMs = durationMs,
+            appliedContextBiasMs = contextBiasMs,
+            sourceLeftX = srcLeftX,
+            sourceRightX = srcRightX,
+            sourceCenterX = srcCenterX,
+            sourceCenterY = srcCenterY,
+            sourceWidthPx = srcWidthPx,
+            statusMessage = "Ultra(${valid.size}f) ${anchor.targetBlockProfile}/${anchor.pawnStance} D=${rawDist.roundToInt()}px → ${durationMs}ms"
+        )
+    }
+
     fun classifyOutcome(
         pre: VisionAnalysisResult,
         landingRatio: Float?,
@@ -745,7 +812,7 @@ object JumpTrainer {
         sb.appendLine(
             String.format(
                 Locale.US,
-                "Config: mode=%s k=%.3f b=%.1f pawn=#%06X tol=%d bgDiff=%d roi=%.2f..%.2f cooldown=%dms autoTrain=%s humanTiming=%s",
+                "Config: mode=%s k=%.3f b=%.1f pawn=#%06X tol=%d bgDiff=%d roi=%.2f..%.2f cooldown=%dms autoTrain=%s humanTiming=%s ultra=%s",
                 config.formulaMode.name,
                 config.kFactor,
                 config.offsetMs,
@@ -756,7 +823,8 @@ object JumpTrainer {
                 config.roiBottomFraction,
                 config.jumpCooldownMs,
                 config.autoTrainEnabled,
-                config.humanizeTiming
+                config.humanizeTiming,
+                config.ultraPrecisionMode
             )
         )
         if (config.adaptiveBiasesMs.isNotEmpty()) {

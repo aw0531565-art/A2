@@ -848,4 +848,20 @@ class JumpTrainerTest {
             .copy(sourceCenterX = 250f, sourceWidthPx = 120f, pawnStance = "CENTER")
         assertNull(JumpTrainer.computeSettledLandingRatio(preRight, postMismatched, scoreDelta = 1))
     }
+
+    @Test
+    fun `computeMultiFrameConsensus rejects jitter outlier via trimmed mean and recalculates duration`() {
+        val cfg = BotConfig(kFactor = 1.385f, offsetMs = 32f, ultraPrecisionMode = true)
+        val f1 = makeResult(px = 220f, py = 950f, bx = 519f, by = 777f)
+        val f2 = makeResult(px = 220f, py = 950f, bx = 520f, by = 777f)
+        val f3 = makeResult(px = 220f, py = 950f, bx = 521f, by = 777f)
+        val outlier = makeResult(px = 220f, py = 950f, bx = 536f, by = 777f)
+
+        val consensus = JumpTrainer.computeMultiFrameConsensus(listOf(f1, f2, f3, outlier), cfg)
+        assertNotNull(consensus)
+        assertEquals("Trimmed mean should average middle pair (520, 521) -> 520.5", 520.5f, consensus!!.blockBounds!!.center.x, 0.05f)
+        assertTrue("Status message should indicate Ultra multi-frame consensus", consensus.statusMessage.startsWith("Ultra(4f)"))
+        val expectedNorm = consensus.rawDistancePx * (1080f / 720f)
+        assertEquals(expectedNorm, consensus.normalizedDistancePx, 0.1f)
+    }
 }

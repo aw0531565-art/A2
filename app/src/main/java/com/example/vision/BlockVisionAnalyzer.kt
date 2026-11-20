@@ -199,7 +199,8 @@ object BlockVisionAnalyzer {
         val p05Y = sortedYs[(sortedYs.size * 0.05f).toInt().coerceIn(0, sortedYs.lastIndex)]
         val p95Y = boundedYs[(boundedYs.size * 0.95f).toInt().coerceIn(0, boundedYs.lastIndex)]
 
-        val pawnCenterX = (p10X + p90X) / 2f
+        val rawPawnCenterX = (p10X + p90X) / 2f
+
         val pawnTopY = p05Y.toFloat()
         val observedHeight = (p95Y - p05Y).toFloat()
         val expectedPawnHeight = width * 0.164f
@@ -224,6 +225,19 @@ object BlockVisionAnalyzer {
         }
 
         val pawnWidthEstimate = (p90X - p10X).coerceAtLeast((width * 0.045f).roundToInt())
+        val pawnCenterX = if (config.ultraPrecisionMode) {
+            refinePawnCenterXWithGradient(
+                pixels = pixels,
+                width = width,
+                roiTop = roiTop,
+                roiHeight = roiHeight,
+                initialCenterX = rawPawnCenterX,
+                pawnBaseY = pawnBaseY,
+                pawnWidthEstimate = pawnWidthEstimate
+            )
+        } else {
+            rawPawnCenterX
+        }
         val pawnExclusionRadius = max((pawnWidthEstimate * 0.85f).roundToInt(), (width * 0.048f).roundToInt())
 
         // Step 2: Three-pass target block detection (opaque, translucent/glass, and subtle background-matching blocks)
@@ -391,11 +405,28 @@ object BlockVisionAnalyzer {
 
         // Step 3: Compute isometric geometric landing center & structural profile
         val isIsometricDiamond = block.widestRowY > block.apexY + 6
-        val midpointX = (block.widestLeftX + block.widestRightX) / 2f
-        val blockCenterX = if (isIsometricDiamond) {
-            block.medianTopMidX * 0.65f + midpointX * 0.35f
+        val rawMidpointX = (block.widestLeftX + block.widestRightX) / 2f
+        val refinedEdges = if (config.ultraPrecisionMode) {
+            refineTargetEdgesWithGradient(
+                pixels = pixels,
+                width = width,
+                roiHeight = roiHeight,
+                block = block
+            )
         } else {
-            block.apexX * 0.42f + midpointX * 0.58f
+            null
+        }
+        val effectiveLeftX = refinedEdges?.first ?: block.widestLeftX
+        val effectiveRightX = refinedEdges?.second ?: block.widestRightX
+        val midpointX = (effectiveLeftX + effectiveRightX) / 2f
+        val blockCenterX = if (isIsometricDiamond) {
+            if (refinedEdges != null) {
+                block.medianTopMidX * 0.45f + midpointX * 0.55f
+            } else {
+                block.medianTopMidX * 0.65f + rawMidpointX * 0.35f
+            }
+        } else {
+            block.apexX * 0.38f + midpointX * 0.62f
         }
         val blockCenterYRel = if (isIsometricDiamond) {
             val projectedEquator = block.apexY + block.maxTopWidth * 0.288f
@@ -408,7 +439,8 @@ object BlockVisionAnalyzer {
         val blockCenterY = roiTop + blockCenterYRel
         val blockTopY = (roiTop + block.apexY).toFloat()
         val blockBottomY = (roiTop + block.lastTopRowY).toFloat()
-        val blockWidthPx = block.maxTopWidth.coerceAtLeast(minRunLength).toFloat()
+        val refinedWidth = (effectiveRightX - effectiveLeftX).takeIf { refinedEdges != null && it > minRunLength }
+        val blockWidthPx = (refinedWidth ?: block.maxTopWidth.toFloat()).coerceAtLeast(minRunLength.toFloat())
         val blockHeightPx = (block.lastTopRowY - block.apexY).coerceAtLeast(1).toFloat()
 
         val scaleTo1080 = 1080f / width.toFloat()
@@ -2132,6 +2164,129 @@ object BlockVisionAnalyzer {
         thresholdSq: Int
     ): Boolean {
         return isValidBlockPixel(pixel, leftBg, rightBg, x, width, thresholdSq, rejectDarkShadows = false)
+    }
+
+    private fun horizontalGradientMag(pixels: IntArray, rowOff: Int, x: Int, width: Int): Int {
+        val xL = (x - 1).coerceIn(0, width - 1)
+        val xR = (x + 1).coerceIn(0, width - 1)
+        val pL = pixels[rowOff + xL]
+        val pR = pixels[rowOff + xR]
+        val dr = abs(((pR shr 16) and 0xFF) - ((pL shr 16) and 0xFF))
+        val dg = abs(((pR shr 8) and 0xFF) - ((pL shr 8) and 0xFF))
+        val db = abs((pR and 0xFF) - (pL and 0xFF))
+        return dr + dg + db
+    }
+
+    private fun snapSubPixelEdge(
+        pixels: IntArray,
+        rowOff: Int,
+        approxX: Float,
+        width: Int,
+        radiusPx: Int = 5,
+        minPeakGrad: Int = 42,
+        maxShiftPx: Float = 3.5f
+    ): Float? {
+        val cx = approxX.roundToInt().coerceIn(2, width - 3)
+        val startX = max(2, cx - radiusPx)
+        val endX = min(width - 3, cx + radiusPx)
+        var bestX = cx
+        var bestGrad = 0
+        for (x in startX..endX) {
+            val g = horizontalGradientMag(pixels, rowOff, x, width)
+            if (g > bestGrad) {
+                bestGrad = g
+                bestX = x
+            }
+        }
+        if (bestGrad < minPeakGrad) return null
+        var sumW = 0.0
+        var sumWX = 0.0
+        for (x in max(2, bestX - 1)..min(width - 3, bestX + 1)) {
+            val g = horizontalGradientMag(pixels, rowOff, x, width).toDouble()
+            val w = g * g
+            sumW += w
+            sumWX += x * w
+        }
+        if (sumW <= 1e-6) return null
+        val snapped = (sumWX / sumW).toFloat()
+        return if (abs(snapped - approxX) <= maxShiftPx) snapped else null
+    }
+
+    private fun refineTargetEdgesWithGradient(
+        pixels: IntArray,
+        width: Int,
+        roiHeight: Int,
+        block: BlockTrace
+    ): Pair<Float, Float>? {
+        val candidateRows = listOf(block.widestRowY - 2, block.widestRowY, block.widestRowY + 2)
+            .filter { it in (block.apexY + 2)..min(roiHeight - 2, block.lastTopRowY) }
+            .ifEmpty { listOf(block.widestRowY.coerceIn(0, roiHeight - 1)) }
+
+        var sumL = 0f
+        var countL = 0
+        var sumR = 0f
+        var countR = 0
+        for (ry in candidateRows) {
+            val rowOff = ry * width
+            snapSubPixelEdge(pixels, rowOff, block.widestLeftX, width)?.let {
+                sumL += it
+                countL++
+            }
+            snapSubPixelEdge(pixels, rowOff, block.widestRightX, width)?.let {
+                sumR += it
+                countR++
+            }
+        }
+        if (countL == 0 || countR == 0) return null
+        val refinedL = sumL / countL
+        val refinedR = sumR / countR
+        return if (refinedR - refinedL >= 24f) refinedL to refinedR else null
+    }
+
+    private fun refinePawnCenterXWithGradient(
+        pixels: IntArray,
+        width: Int,
+        roiTop: Int,
+        roiHeight: Int,
+        initialCenterX: Float,
+        pawnBaseY: Float,
+        pawnWidthEstimate: Int
+    ): Float {
+        val halfSpan = (pawnWidthEstimate * 0.5f).coerceIn(10f, 36f)
+        val bandStartRel = (pawnBaseY - roiTop - pawnWidthEstimate * 0.85f).roundToInt().coerceIn(0, roiHeight - 1)
+        val bandEndRel = (pawnBaseY - roiTop - pawnWidthEstimate * 0.35f).roundToInt().coerceIn(bandStartRel, roiHeight - 1)
+        var sumMid = 0f
+        var count = 0
+        var ry = bandStartRel
+        while (ry <= bandEndRel) {
+            val rowOff = ry * width
+            val edgeL = snapSubPixelEdge(
+                pixels = pixels,
+                rowOff = rowOff,
+                approxX = initialCenterX - halfSpan,
+                width = width,
+                radiusPx = 6,
+                minPeakGrad = 55,
+                maxShiftPx = 4.0f
+            )
+            val edgeR = snapSubPixelEdge(
+                pixels = pixels,
+                rowOff = rowOff,
+                approxX = initialCenterX + halfSpan,
+                width = width,
+                radiusPx = 6,
+                minPeakGrad = 55,
+                maxShiftPx = 4.0f
+            )
+            if (edgeL != null && edgeR != null && (edgeR - edgeL) in (pawnWidthEstimate * 0.65f)..(pawnWidthEstimate * 1.45f)) {
+                sumMid += (edgeL + edgeR) * 0.5f
+                count++
+            }
+            ry += 2
+        }
+        if (count < 2) return initialCenterX
+        val refined = sumMid / count
+        return if (abs(refined - initialCenterX) <= 2.5f) refined else initialCenterX
     }
 
     /**

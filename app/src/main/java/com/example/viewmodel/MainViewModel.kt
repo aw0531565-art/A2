@@ -269,6 +269,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         AutomationBridge.appendLog(if (enabled) "Human-Like Jump Pacing enabled" else "Human-Like Jump Pacing disabled")
     }
 
+    fun updateUltraPrecisionMode(enabled: Boolean) {
+        updateConfig { it.copy(ultraPrecisionMode = enabled) }
+        AutomationBridge.appendLog(
+            if (enabled) "Ultra-Precision Mode (Slow) enabled — multi-frame + edge fitting"
+            else "Ultra-Precision Mode disabled — fast cadence active"
+        )
+    }
+
     fun applyManualFeedback(isShort: Boolean) {
         if (AutomationBridge.isScreenCaptureActive.value) {
             AutomationBridge.requestManualFeedback(isShort)

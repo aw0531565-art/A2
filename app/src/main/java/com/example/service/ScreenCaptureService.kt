@@ -382,10 +382,16 @@ class ScreenCaptureService : Service() {
 
         val startManualEpoch = manualConfigEpoch
         var lockedStable = false
+        val ultraMode = requireStability && config.ultraPrecisionMode && AutomationBridge.isAutoLoopActive.value
+        val consensusWindow = ArrayList<VisionAnalysisResult>(4)
+        if (stableResult.pawnFound && stableResult.blockFound) {
+            consensusWindow.add(stableResult)
+        }
 
         if (requireStability && AutomationBridge.isAutoLoopActive.value) {
             val prevSettled = lastSettledPreview
-            if (usedFreshInitial &&
+            if (!ultraMode &&
+                usedFreshInitial &&
                 prevSettled != null &&
                 prevSettled.pawnFound && stableResult.pawnFound &&
                 prevSettled.blockFound && stableResult.blockFound
@@ -405,16 +411,33 @@ class ScreenCaptureService : Service() {
             var missingBoardStreak = if (!stableResult.pawnFound || !stableResult.blockFound) 1 else 0
             var lastDistDrift = Float.MAX_VALUE
             var lastPawnDrift = Float.MAX_VALUE
+            var ultraStaticStreak = 0
+            val maxChecks = if (ultraMode) 14 else 10
+            val pollDelayMs = if (ultraMode) 60L else 50L
 
-            while (!lockedStable && checks < 10 && AutomationBridge.isAutoLoopActive.value) {
-                delay(50L)
-                val nextPair = analyzeLatestFrameWithDiag(
+            while (!lockedStable && checks < maxChecks && AutomationBridge.isAutoLoopActive.value) {
+                delay(pollDelayMs)
+                val freshPair = if (ultraMode) {
+                    analyzeLatestFrameWithDiag(
+                        config = config,
+                        overlayRect = overlayRect,
+                        allowCached = false,
+                        touchdownSnapshot = if (checks == 0) lastTouchdownSnapshot else null,
+                        expectedSourceWidthPx = expectedSourceWidth
+                    )
+                } else null
+                val nextPair = freshPair ?: analyzeLatestFrameWithDiag(
                     config = config,
                     overlayRect = overlayRect,
                     allowCached = true,
                     touchdownSnapshot = if (checks == 0) lastTouchdownSnapshot else null,
                     expectedSourceWidthPx = expectedSourceWidth
                 )
+                if (ultraMode && freshPair == null && nextPair != null) {
+                    ultraStaticStreak++
+                } else if (freshPair != null) {
+                    ultraStaticStreak = 0
+                }
                 val nextResult = nextPair?.first
                 val prevW = stableResult.blockBounds?.widthPx ?: 0f
                 val nextW = nextResult?.blockBounds?.widthPx ?: 0f
@@ -429,22 +452,53 @@ class ScreenCaptureService : Service() {
                         abs(stableResult.pawnBaseY - nextResult.pawnBaseY)
                     )
                     val widthDrift = abs(prevW - nextW)
-                    if (lastDistDrift <= 8f && lastPawnDrift <= 5f && widthDrift <= 14f) {
-                        stableResult = nextResult
-                        stableDiag = nextPair.second
-                        lockedStable = true
-                        break
-                    }
-                    AutomationBridge.updateAnalysis(nextResult)
-                    AutomationBridge.updateVisionDebugStatus(
-                        VisionDebugStatus(
-                            phase = "WAITING_STABILITY",
-                            message = "Stabilizing (${checks + 1}/10): ΔD=${lastDistDrift.roundToInt()}px ΔP=${lastPawnDrift.roundToInt()}px",
-                            showTargetHighlight = true
+                    if (ultraMode) {
+                        consensusWindow.add(nextResult)
+                        if (consensusWindow.size > 4) {
+                            consensusWindow.removeAt(0)
+                        }
+                        if (consensusWindow.size >= 3) {
+                            val recent = consensusWindow.takeLast(3)
+                            val distSpread = recent.maxOf { it.rawDistancePx } - recent.minOf { it.rawDistancePx }
+                            val pawnSpreadX = recent.maxOf { it.pawnCenterX } - recent.minOf { it.pawnCenterX }
+                            val pawnSpreadY = recent.maxOf { it.pawnBaseY } - recent.minOf { it.pawnBaseY }
+                            val widthSpread = recent.maxOf { it.blockBounds?.widthPx ?: 0f } - recent.minOf { it.blockBounds?.widthPx ?: 0f }
+                            val tightEnough = distSpread <= 3.5f && pawnSpreadX <= 2.5f && pawnSpreadY <= 2.5f && widthSpread <= 6.0f
+                            val settledStatic = ultraStaticStreak >= 2 && distSpread <= 5.0f && pawnSpreadX <= 3.5f
+                            if ((tightEnough && (consensusWindow.size >= 4 || checks >= 2)) || settledStatic) {
+                                stableResult = JumpTrainer.computeMultiFrameConsensus(consensusWindow, config) ?: nextResult
+                                stableDiag = nextPair.second
+                                lockedStable = true
+                                break
+                            }
+                        }
+                        AutomationBridge.updateAnalysis(nextResult)
+                        AutomationBridge.updateVisionDebugStatus(
+                            VisionDebugStatus(
+                                phase = "ULTRA_LOCK",
+                                message = "ULTRA (${consensusWindow.size}/4): ΔD=${String.format(Locale.US, "%.1f", lastDistDrift)}px ΔP=${String.format(Locale.US, "%.1f", lastPawnDrift)}px",
+                                showTargetHighlight = true
+                            )
                         )
-                    )
+                    } else {
+                        if (lastDistDrift <= 8f && lastPawnDrift <= 5f && widthDrift <= 14f) {
+                            stableResult = nextResult
+                            stableDiag = nextPair.second
+                            lockedStable = true
+                            break
+                        }
+                        AutomationBridge.updateAnalysis(nextResult)
+                        AutomationBridge.updateVisionDebugStatus(
+                            VisionDebugStatus(
+                                phase = "WAITING_STABILITY",
+                                message = "Stabilizing (${checks + 1}/$maxChecks): ΔD=${lastDistDrift.roundToInt()}px ΔP=${lastPawnDrift.roundToInt()}px",
+                                showTargetHighlight = true
+                            )
+                        )
+                    }
                 } else {
                     missingBoardStreak++
+                    consensusWindow.clear()
                     lastDistDrift = Float.MAX_VALUE
                     lastPawnDrift = Float.MAX_VALUE
                     if (missingBoardStreak >= 2) {
@@ -456,10 +510,23 @@ class ScreenCaptureService : Service() {
                     }
                 }
                 if (nextPair != null) {
-                    stableResult = nextPair.first
+                    if (!ultraMode) {
+                        stableResult = nextPair.first
+                    } else {
+                        // In ultra mode compare against latest candidate before final consensus
+                        stableResult = nextPair.first
+                    }
                     stableDiag = nextPair.second
                 }
                 checks++
+            }
+            if (!lockedStable && ultraMode && consensusWindow.size >= 2) {
+                val tail = consensusWindow.takeLast(3)
+                val distSpread = tail.maxOf { it.rawDistancePx } - tail.minOf { it.rawDistancePx }
+                if (distSpread <= 7.5f) {
+                    stableResult = JumpTrainer.computeMultiFrameConsensus(tail, config) ?: stableResult
+                    lockedStable = true
+                }
             }
             if (!lockedStable) {
                 if (!stableResult.pawnFound || !stableResult.blockFound) {
@@ -536,11 +603,12 @@ class ScreenCaptureService : Service() {
         val baseTapY = screenHeight * config.tapYFraction
 
         if (requireStability && config.humanizeTiming && AutomationBridge.isAutoLoopActive.value) {
-            val humanPauseMs = computeHumanPreJumpPauseMs()
+            val rawHumanPauseMs = computeHumanPreJumpPauseMs()
+            val humanPauseMs = if (ultraMode) rawHumanPauseMs.coerceAtMost(240L) else rawHumanPauseMs
             AutomationBridge.updateVisionDebugStatus(
                 VisionDebugStatus(
-                    phase = "HUMAN_PACING",
-                    message = "Pace (${humanPauseMs}ms) → D=${stableResult.rawDistancePx.roundToInt()}px",
+                    phase = if (ultraMode) "ULTRA_PACE" else "HUMAN_PACING",
+                    message = "${if (ultraMode) "ULTRA " else ""}Pace (${humanPauseMs}ms) → D=${stableResult.rawDistancePx.roundToInt()}px",
                     showTargetHighlight = true
                 )
             )
@@ -548,8 +616,8 @@ class ScreenCaptureService : Service() {
             if (!AutomationBridge.isAutoLoopActive.value) {
                 return 120L
             }
-            if (humanPauseMs > 125L || !lockedStable) {
-                // Re-verify fresh frame after longer pauses so moving blocks stay locked
+            if (ultraMode || humanPauseMs > 125L || !lockedStable) {
+                // Re-verify frame after pause so moving blocks stay locked (and blend into ultra consensus)
                 val postPausePair = analyzeLatestFrameWithDiag(
                     config = config,
                     overlayRect = overlayRect,
@@ -563,12 +631,18 @@ class ScreenCaptureService : Service() {
                 val distShift = abs(postPause.rawDistancePx - stableResult.rawDistancePx)
                 val pawnShift = abs(postPause.pawnCenterX - stableResult.pawnCenterX)
                 val largeShift = distShift > 26f || pawnShift > 16f
-                if (largeShift || ((distShift > 15f || pawnShift > 10f) && consecutiveJitterRetries < 2)) {
+                if (largeShift || ((distShift > (if (ultraMode) 8f else 15f) || pawnShift > (if (ultraMode) 5f else 10f)) && consecutiveJitterRetries < 2)) {
                     consecutiveJitterRetries = if (!largeShift) consecutiveJitterRetries + 1 else 0
                     AutomationBridge.updateAnalysis(postPause)
                     return 65L
                 }
-                stableResult = postPause
+                if (ultraMode) {
+                    consensusWindow.add(postPause)
+                    if (consensusWindow.size > 4) consensusWindow.removeAt(0)
+                    stableResult = JumpTrainer.computeMultiFrameConsensus(consensusWindow, config) ?: postPause
+                } else {
+                    stableResult = postPause
+                }
                 stableDiag = postPausePair.second
                 AutomationBridge.updateAnalysis(stableResult)
             }
@@ -694,24 +768,53 @@ class ScreenCaptureService : Service() {
         val cooldownJitter = if (config.humanizeTiming) kotlin.random.Random.nextLong(-25L, 46L) else 0L
         val longPanBonus = ((holdMs - 650L).coerceAtLeast(0L) * 0.25f).roundToLong().coerceAtMost(80L)
         val elapsedWaitMs = burst1DelayMs + 55L
-        val remainingCooldown = (config.jumpCooldownMs + longPanBonus - elapsedWaitMs + cooldownJitter).coerceAtLeast(280L)
+        val targetCooldown = if (config.ultraPrecisionMode) maxOf(config.jumpCooldownMs, 1180L) else config.jumpCooldownMs
+        val remainingCooldown = (targetCooldown + longPanBonus - elapsedWaitMs + cooldownJitter).coerceAtLeast(280L)
         delay(remainingCooldown)
         val expectedLandedWidth = stableResult.blockBounds?.widthPx
-        val postSettled = analyzeLatestFrameWithDiag(
+        val postSettled1 = analyzeLatestFrameWithDiag(
             config = config,
             overlayRect = overlayRect,
             allowCached = true,
             expectedSourceWidthPx = expectedLandedWidth
         )?.first
 
+        val postSettled: VisionAnalysisResult?
         val preScore = stableResult.scoreReading
-        val postScore = postSettled?.scoreReading
-        val scoreDelta = if (preScore != null && postScore != null && postScore >= preScore && (postScore - preScore) <= 64) {
-            postScore - preScore
+        val scoreDelta: Int?
+        val settledRatio: Float?
+        if (config.ultraPrecisionMode && postSettled1 != null && postSettled1.pawnFound) {
+            delay(65L)
+            val postSettled2 = analyzeLatestFrameWithDiag(
+                config = config,
+                overlayRect = overlayRect,
+                allowCached = true,
+                expectedSourceWidthPx = expectedLandedWidth
+            )?.first ?: postSettled1
+            postSettled = postSettled2
+            val postScore = postSettled.scoreReading ?: postSettled1.scoreReading
+            scoreDelta = if (preScore != null && postScore != null && postScore >= preScore && (postScore - preScore) <= 64) {
+                postScore - preScore
+            } else {
+                null
+            }
+            val sr1 = JumpTrainer.computeSettledLandingRatio(stableResult, postSettled1, scoreDelta)
+            val sr2 = JumpTrainer.computeSettledLandingRatio(stableResult, postSettled2, scoreDelta)
+            settledRatio = when {
+                sr1 != null && sr2 != null && abs(sr1 - sr2) <= 0.05f -> (sr1 + sr2) * 0.5f
+                sr2 != null -> sr2
+                else -> sr1
+            }
         } else {
-            null
+            postSettled = postSettled1
+            val postScore = postSettled?.scoreReading
+            scoreDelta = if (preScore != null && postScore != null && postScore >= preScore && (postScore - preScore) <= 64) {
+                postScore - preScore
+            } else {
+                null
+            }
+            settledRatio = JumpTrainer.computeSettledLandingRatio(stableResult, postSettled, scoreDelta)
         }
-        val settledRatio = JumpTrainer.computeSettledLandingRatio(stableResult, postSettled, scoreDelta)
         val landingRatio = if (scoreDelta != null && scoreDelta >= 1 && settledRatio != null) {
             settledRatio
         } else {
