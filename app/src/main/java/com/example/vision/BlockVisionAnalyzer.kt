@@ -1907,12 +1907,13 @@ object BlockVisionAnalyzer {
         thresholdSq: Int,
         targetBlock: BlockTrace? = null
     ): SourcePlatformStance {
-        val scanStartRel = (pawnBaseY - roiTop - width * 0.075f).roundToInt().coerceIn(0, roiHeight - 1)
-        val scanEndRel = (pawnBaseY - roiTop + width * 0.044f).roundToInt().coerceIn(scanStartRel, roiHeight - 1)
+        val scanStartRel = (pawnBaseY - roiTop - width * 0.068f).roundToInt().coerceIn(0, roiHeight - 1)
+        val scanEndRel = (pawnBaseY - roiTop + width * 0.025f).roundToInt().coerceIn(scanStartRel, roiHeight - 1)
         val minSrcW = max(max(40, (width * 0.058f).roundToInt()), (pawnWidthEstimate * 1.45f).roundToInt())
-        val maxSrcW = (width * 0.44f).roundToInt()
-        val maxHalfTravel = (width * 0.28f).roundToInt()
+        val maxSrcW = (width * 0.40f).roundToInt()
+        val maxHalfTravel = (width * 0.205f).roundToInt()
         val bridgeHalf = max(12, (pawnWidthEstimate * 0.56f).roundToInt())
+        val srcThresholdSq = max(thresholdSq, 1150)
 
         val blockSideLeftX = targetBlock?.widestLeftX?.roundToInt() ?: Int.MAX_VALUE
         val blockSideRightX = targetBlock?.widestRightX?.roundToInt() ?: Int.MIN_VALUE
@@ -1942,20 +1943,20 @@ object BlockVisionAnalyzer {
 
             var anchorX = seedX
             if (!pawnInFootBand || abs(anchorX - pawnCenterX) > bridgeHalf || entersTargetBlock(anchorX, ry) ||
-                !isForegroundPixel(pixels[rowOff + anchorX], leftBg, rightBg, anchorX, width, thresholdSq / 3)
+                !isForegroundPixel(pixels[rowOff + anchorX], leftBg, rightBg, anchorX, width, srcThresholdSq / 2)
             ) {
                 var foundAnchor = -1
                 for (d in 0..20 step 2) {
                     val xR = (seedX + d).coerceAtMost(width - marginX - 1)
                     if (!entersTargetBlock(xR, ry) && !isExcluded(xR, absY, excludedRect) &&
-                        isValidBlockPixel(pixels[rowOff + xR], leftBg, rightBg, xR, width, thresholdSq, rejectDarkShadows = true)
+                        isValidBlockPixel(pixels[rowOff + xR], leftBg, rightBg, xR, width, srcThresholdSq, rejectDarkShadows = true)
                     ) {
                         foundAnchor = xR
                         break
                     }
                     val xL = (seedX - d).coerceAtLeast(marginX)
                     if (!entersTargetBlock(xL, ry) && !isExcluded(xL, absY, excludedRect) &&
-                        isValidBlockPixel(pixels[rowOff + xL], leftBg, rightBg, xL, width, thresholdSq, rejectDarkShadows = true)
+                        isValidBlockPixel(pixels[rowOff + xL], leftBg, rightBg, xL, width, srcThresholdSq, rejectDarkShadows = true)
                     ) {
                         foundAnchor = xL
                         break
@@ -1975,8 +1976,8 @@ object BlockVisionAnalyzer {
                 val nx = lx - 1
                 if (entersTargetBlock(nx, ry) || isExcluded(nx, absY, excludedRect)) break
                 val inBridge = pawnInFootBand && abs(nx - pawnCenterX) <= bridgeHalf &&
-                    isForegroundPixel(pixels[rowOff + nx], leftBg, rightBg, nx, width, thresholdSq / 3)
-                val fg = inBridge || isValidBlockPixel(pixels[rowOff + nx], leftBg, rightBg, nx, width, thresholdSq, rejectDarkShadows = true)
+                    isForegroundPixel(pixels[rowOff + nx], leftBg, rightBg, nx, width, srcThresholdSq / 2)
+                val fg = inBridge || isValidBlockPixel(pixels[rowOff + nx], leftBg, rightBg, nx, width, srcThresholdSq, rejectDarkShadows = true)
                 if (fg) {
                     lx = nx
                     missLeft = 0
@@ -1994,8 +1995,8 @@ object BlockVisionAnalyzer {
                 val nx = rx + 1
                 if (entersTargetBlock(nx, ry) || isExcluded(nx, absY, excludedRect)) break
                 val inBridge = pawnInFootBand && abs(nx - pawnCenterX) <= bridgeHalf &&
-                    isForegroundPixel(pixels[rowOff + nx], leftBg, rightBg, nx, width, thresholdSq / 3)
-                val fg = inBridge || isValidBlockPixel(pixels[rowOff + nx], leftBg, rightBg, nx, width, thresholdSq, rejectDarkShadows = true)
+                    isForegroundPixel(pixels[rowOff + nx], leftBg, rightBg, nx, width, srcThresholdSq / 2)
+                val fg = inBridge || isValidBlockPixel(pixels[rowOff + nx], leftBg, rightBg, nx, width, srcThresholdSq, rejectDarkShadows = true)
                 if (fg) {
                     rx = nx
                     missRight = 0
@@ -2044,9 +2045,9 @@ object BlockVisionAnalyzer {
         val signedAlongJump = normDx * jumpDirX
 
         val stance = when {
-            radialOffset <= 0.25f -> "CENTER"
-            signedAlongJump >= 0.24f -> "SIDE_FRONT"
-            signedAlongJump <= -0.24f -> "SIDE_BACK"
+            radialOffset <= 0.33f -> "CENTER"
+            signedAlongJump >= 0.33f -> "SIDE_FRONT"
+            signedAlongJump <= -0.33f -> "SIDE_BACK"
             else -> "SIDE_EDGE"
         }
 

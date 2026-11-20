@@ -112,7 +112,13 @@ object JumpTrainer {
 
         val ux = landing.pawnCenterX - pre.pawnCenterX
         val uy = landing.pawnBaseY - pre.pawnBaseY
-        val ratio = (ux * vx + uy * vy) / distSq
+        val rDot = (ux * vx + uy * vy) / distSq
+        val rX = if (abs(vx) >= dist * 0.72f) ux / vx else rDot
+        val ratio = if (abs(vx) >= dist * 0.72f && rX in 0.25f..1.85f && uy < rX * vy - 3f && rDot > rX + 0.02f) {
+            rX
+        } else {
+            rDot
+        }
 
         // Reject completely unrelated jumps (e.g. pawn reset / UI overlap perpendicular to jump axis)
         val cross = abs(ux * vy - uy * vx) / dist
@@ -142,6 +148,12 @@ object JumpTrainer {
         }
         // >=2 pts means dead-center bullseye combo (+2, +4, +6, +8...) was awarded.
         if (scoreDelta != null && scoreDelta >= 2 && postSettled?.pawnFound == true) {
+            return JumpOutcome.CENTER
+        }
+        // Confirmed +1pt safe landing with moderate landingRatio (e.g. 1.12 on short hops) is CENTER, not PAST_CENTER
+        if (scoreDelta != null && scoreDelta >= 1 && postSettled?.pawnFound == true &&
+            landingRatio != null && landingRatio in 0.84f..1.16f
+        ) {
             return JumpOutcome.CENTER
         }
 
@@ -213,9 +225,9 @@ object JumpTrainer {
             (pawnStance != "CENTER" && pawnStance != "UNKNOWN")
         val singlePointOffCenter = !isFatalOut && scoreDelta == 1
         val globalShare = when {
-            isMiniBlock && singlePointOffCenter -> 0.12f
-            isMiniBlock -> 0.18f
-            isSpecialtyContext && singlePointOffCenter -> 0.22f
+            isMiniBlock && singlePointOffCenter -> 0.04f
+            isMiniBlock -> 0.12f
+            isSpecialtyContext && singlePointOffCenter -> 0.06f
             isSpecialtyContext -> 0.35f
             else -> 1.0f
         }
@@ -246,7 +258,7 @@ object JumpTrainer {
             }
 
             outcome == JumpOutcome.OUT_SHORT -> {
-                val shortDistDamp = if (dNorm < 260f) 0.25f else 1.0f
+                val shortDistDamp = if (dNorm < 285f) 0.15f else 1.0f
                 if (landingRatio != null && landingRatio in 0.45f..0.95f) {
                     val safeRatio = landingRatio.coerceIn(0.72f, 0.92f)
                     val idealHoldMs = (holdMs.toFloat() / safeRatio)
@@ -266,7 +278,7 @@ object JumpTrainer {
 
             outcome == JumpOutcome.OUT_OVERSHOOT -> {
                 allowLargeRecovery = true
-                val shortDistDamp = if (dNorm < 260f) 0.25f else 1.0f
+                val shortDistDamp = if (dNorm < 285f) 0.15f else 1.0f
                 if (landingRatio != null && landingRatio in 1.06f..1.65f) {
                     val safeRatio = landingRatio.coerceIn(1.07f, 1.32f)
                     val idealHoldMs = (holdMs.toFloat() / safeRatio)
@@ -386,10 +398,10 @@ object JumpTrainer {
                         deltaMs = if (errorRatio > 0f) 6f else -6f
                     }
                     learnedErrorMs = deltaMs
-                    val shortDistDamp = if (dNorm < 280f) 0.45f else 1.0f
+                    val shortDistDamp = if (dNorm < 285f) 0.15f else 1.0f
 
                     newK += ((deltaMs * globalShare * shortDistDamp) * 0.80f) / dNorm.coerceAtLeast(180f)
-                    newB += (deltaMs * globalShare) * 0.20f
+                    newB += (deltaMs * globalShare * shortDistDamp) * 0.20f
                     note = when {
                         singlePointOffCenter -> String.format(Locale.US, "Edge +1pt trim r=%.2f Δ=%.0fms", landingRatio, deltaMs)
                         abs(errorRatio) <= 0.045f -> String.format(Locale.US, "Center trim r=%.2f Δ=%.0fms", landingRatio, deltaMs)
@@ -445,7 +457,7 @@ object JumpTrainer {
                         else -> 0.60f
                     }
                     val blkMin = if (isMiniBlock) -65f else -24f
-                    val blkMax = if (isMiniBlock) 75f else 14f
+                    val blkMax = if (isMiniBlock) 75f else if (targetProfile == "NARROW") 6f else 14f
                     val rawBlk = (curBlk + ctxDelta * blkShare * distAtten).coerceIn(blkMin, blkMax)
                     newBiases[pKey] = if (singlePointOffCenter && isMiniBlock && learnedErrorMs < 0f) {
                         rawBlk.coerceAtLeast(4f)
@@ -463,9 +475,9 @@ object JumpTrainer {
 
             if (stKey.isNotEmpty() && pawnStance != "CENTER") {
                 val curSt = newBiases[stKey] ?: 0f
-                val maxStStep = if (isFatalOut) 8f else 5f
+                val maxStStep = if (isFatalOut) 6f else 3.5f
                 val stDelta = (ctxDelta * 0.22f * distAtten).coerceIn(-maxStStep, maxStStep)
-                newBiases[stKey] = (curSt + stDelta).coerceIn(-14f, 14f)
+                newBiases[stKey] = (curSt + stDelta).coerceIn(-12f, 12f)
                 if (!note.contains(pawnStance)) {
                     note += " [$pawnStance]"
                 }

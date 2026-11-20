@@ -780,4 +780,39 @@ class JumpTrainerTest {
         assertTrue("0pt SHORT with r=0.99 must never claim Dead center ($rimNote)", !rimNote.contains("Dead center"))
         assertTrue("0pt SHORT with r=0.99 should nudge calibration gently ($rimNote)", afterRimMiss.kFactor >= cfg.kFactor)
     }
+
+    @Test
+    fun `airborne Z height does not inflate computeLandingRatio and +1pt r=1_12 classifies as CENTER`() {
+        // Reproduces short-hop airborne capture (#211/#220): target center is (400, 863) from pawn (250, 950)
+        // vx=+150, vy=-87, dRaw=173.4; if pawn is still Z=40px above center at (400, 823), rDot=1.12 but rX=1.00.
+        val pre = makeResult(px = 250f, py = 950f, bx = 400f, by = 863f, dRaw = 173.4f, dNorm = 260f)
+        val airborneCenter = makeResult(px = 400f, py = 823f)
+        val ratio = JumpTrainer.computeLandingRatio(pre, airborneCenter)
+        assertNotNull(ratio)
+        assertEquals("Z-invariant horizontal projection must read ~1.00 despite 40px airborne height", 1.00f, ratio!!, 0.02f)
+
+        // Confirmed +1pt safe landing with moderate r=1.12 (e.g. #211) must classify as CENTER, not PAST_CENTER
+        val settled = makeResult(px = 360f, py = 875f)
+        val outcome211 = JumpTrainer.classifyOutcome(pre, landingRatio = 1.12f, postSettled = settled, scoreDelta = 1)
+        assertEquals("Safe +1pt landing at r=1.12 must classify as CENTER", JumpOutcome.CENTER, outcome211)
+
+        // Specialty NARROW +1pt edge trim must barely touch global kFactor (<= 0.002)
+        val cfg = BotConfig(kFactor = 1.388f, offsetMs = 32.5f, autoTrainEnabled = true)
+        val (afterNarrowTrim, narrowNote) = JumpTrainer.applyOnlineUpdate(
+            config = cfg,
+            dNorm = 360f,
+            holdMs = 530L,
+            outcome = JumpOutcome.CENTER,
+            landingRatio = 1.05f,
+            history = emptyList(),
+            targetProfile = "NARROW",
+            targetColorGroup = "GOLD",
+            pawnStance = "SIDE_BACK",
+            scoreDelta = 1
+        )
+        assertTrue(
+            "Specialty +1pt trim must keep global k drift <= 0.002 ($narrowNote -> ${afterNarrowTrim.kFactor})",
+            kotlin.math.abs(afterNarrowTrim.kFactor - cfg.kFactor) <= 0.002f
+        )
+    }
 }

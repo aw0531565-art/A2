@@ -588,11 +588,15 @@ class ScreenCaptureService : Service() {
         }
 
         if (!completed) {
-            AutomationBridge.appendLog("Gesture dispatch failed, cancelled, or timed out", isError = true)
+            val userPaused = !AutomationBridge.isAutoLoopActive.value
+            AutomationBridge.appendLog(
+                if (userPaused) "Hold interrupted (Auto paused)" else "Gesture dispatch failed, cancelled, or timed out",
+                isError = !userPaused
+            )
             AutomationBridge.updateVisionDebugStatus(
                 VisionDebugStatus(
-                    phase = "ERROR",
-                    message = "Touch cancelled/timed out — retrying",
+                    phase = if (userPaused) "PAUSED" else "ERROR",
+                    message = if (userPaused) "Paused mid-hold" else "Touch cancelled/timed out — retrying",
                     showTargetHighlight = false,
                     isHolding = false
                 )
@@ -613,7 +617,7 @@ class ScreenCaptureService : Service() {
         clearCachedFrame()
 
         // Sample right at touchdown: avoid premature mid-air capture on short/mid holds and camera pan on long holds
-        val burst1DelayMs = (400L + (holdMs * 0.032f).roundToLong()).coerceIn(406L, 434L)
+        val burst1DelayMs = (420L + (holdMs * 0.016f).roundToLong()).coerceIn(424L, 436L)
         delay(burst1DelayMs)
         val burst1 = analyzeLatestFrameWithDiag(config, overlayRect, allowCached = false)?.first
         val r1 = JumpTrainer.computeLandingRatio(stableResult, burst1)
@@ -627,7 +631,7 @@ class ScreenCaptureService : Service() {
         val landingRatio = when {
             r1 != null && r2 != null -> when {
                 abs(r1 - r2) <= 0.05f -> (r1 + r2) / 2f
-                r1 > 1.07f && r2 in 0.86f..1.07f && holdMs < 640L -> r2
+                r1 > 1.07f && r2 in 0.83f..1.08f && holdMs < 660L -> r2
                 r1 > 1.14f && r2 in 0.85f..1.10f -> r2
                 r2 < r1 - 0.05f -> r1
                 else -> r2
