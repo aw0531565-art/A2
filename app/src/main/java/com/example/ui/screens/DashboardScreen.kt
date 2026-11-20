@@ -627,7 +627,7 @@ private fun AutomationControlsCard(
                 Slider(
                     value = config.jumpCooldownMs.toFloat(),
                     onValueChange = { onCooldownChange(it.roundToInt().toLong()) },
-                    valueRange = 800f..3500f,
+                    valueRange = 650f..2500f,
                     colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary),
                     modifier = Modifier.testTag("slider_cooldown")
                 )

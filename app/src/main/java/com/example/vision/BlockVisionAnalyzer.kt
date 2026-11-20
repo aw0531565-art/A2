@@ -1912,7 +1912,8 @@ object BlockVisionAnalyzer {
         expectedSourceWidthPx: Float? = null
     ): SourcePlatformStance {
         val scanStartRel = (pawnBaseY - roiTop - width * 0.032f).roundToInt().coerceIn(0, roiHeight - 1)
-        val scanEndRel = (pawnBaseY - roiTop + width * 0.036f).roundToInt().coerceIn(scanStartRel, roiHeight - 1)
+        val scanDownFrac = if (expectedSourceWidthPx != null && expectedSourceWidthPx < width * 0.24f) 0.034f else 0.044f
+        val scanEndRel = (pawnBaseY - roiTop + width * scanDownFrac).roundToInt().coerceIn(scanStartRel, roiHeight - 1)
         val minSrcW = max(max(40, (width * 0.058f).roundToInt()), (pawnWidthEstimate * 1.45f).roundToInt())
         val maxSrcW = expectedSourceWidthPx?.let {
             min((width * 0.40f).roundToInt(), (it * 1.18f).roundToInt())
@@ -1991,7 +1992,7 @@ object BlockVisionAnalyzer {
                     missLeft = 0
                 } else {
                     missLeft++
-                    if (missLeft >= 2) break
+                    if (missLeft >= 3) break
                     lx = nx
                 }
             }
@@ -2010,7 +2011,7 @@ object BlockVisionAnalyzer {
                     missRight = 0
                 } else {
                     missRight++
-                    if (missRight >= 2) break
+                    if (missRight >= 3) break
                     rx = nx
                 }
             }
@@ -2023,7 +2024,12 @@ object BlockVisionAnalyzer {
                 if (ry < topSurfaceRelY) {
                     topSurfaceRelY = ry
                 }
-                val spikeLimit = if (bestWidth >= (width * 0.085f).roundToInt()) bestWidth + (width * 0.14f).roundToInt() else maxSrcW
+                val spikeLimit = if (bestWidth >= (width * 0.085f).roundToInt()) {
+                    val expectedGuard = expectedSourceWidthPx?.let { (it * 1.05f).roundToInt() } ?: 0
+                    max(bestWidth + (width * 0.16f).roundToInt(), expectedGuard)
+                } else {
+                    maxSrcW
+                }
                 if (rowW in minSrcW..min(maxSrcW, spikeLimit) && rowW > bestWidth + 3) {
                     bestWidth = rowW
                     bestLeftX = lx.toFloat()

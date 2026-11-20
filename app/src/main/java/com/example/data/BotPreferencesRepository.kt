@@ -47,7 +47,7 @@ class BotPreferencesRepository(private val context: Context) {
 
     private companion object {
         const val MIN_VALID_CALIB_VERSION = 7
-        const val CURRENT_CALIB_VERSION = 16
+        const val CURRENT_CALIB_VERSION = 17
         const val MAX_STORED_RECORDS = 60
     }
 
@@ -64,10 +64,12 @@ class BotPreferencesRepository(private val context: Context) {
         val storedVersion = prefs[Keys.CALIB_VERSION] ?: 1
         val defaults = BotConfig()
         val seededBiases = mapOf(
-            "DIST:NEAR200" to -23f,
-            "DIST:NEAR270" to -18f,
-            "STANCE:SIDE_BACK" to 2f,
-            "STANCE:SIDE_FRONT" to -2f
+            "DIST:NEAR200" to -16f,
+            "DIST:NEAR270" to -8f,
+            "STANCE:SIDE_BACK" to 4f,
+            "STANCE:SIDE_FRONT" to -2f,
+            "BLK:MINI" to 5f,
+            "BLK:NARROW" to -6f
         )
         if (storedVersion < MIN_VALID_CALIB_VERSION) {
             return defaults.copy(adaptiveBiasesMs = seededBiases)
@@ -75,7 +77,7 @@ class BotPreferencesRepository(private val context: Context) {
         val modeName = prefs[Keys.FORMULA_MODE] ?: FormulaMode.LINEAR.name
         val mode = runCatching { FormulaMode.valueOf(modeName) }.getOrDefault(FormulaMode.LINEAR)
         val rawCooldown = prefs[Keys.JUMP_COOLDOWN_MS] ?: defaults.jumpCooldownMs
-        val migratedCooldown = if (storedVersion < CURRENT_CALIB_VERSION && rawCooldown >= 1500L) {
+        val migratedCooldown = if (storedVersion < CURRENT_CALIB_VERSION && rawCooldown >= 1050L) {
             defaults.jumpCooldownMs
         } else {
             rawCooldown
@@ -85,14 +87,14 @@ class BotPreferencesRepository(private val context: Context) {
         rawBiases.forEach { (k, v) ->
             if (k != "BLK:MEDIUM" && !(storedVersion < CURRENT_CALIB_VERSION && k.contains(":UNKNOWN:"))) {
                 biases[k] = when {
-                    storedVersion < CURRENT_CALIB_VERSION && k == "BLK:MINI" -> v.coerceIn(-4f, 4f)
-                    storedVersion < CURRENT_CALIB_VERSION && k == "BLK:NARROW" -> v.coerceIn(-4f, 4f)
-                    storedVersion < CURRENT_CALIB_VERSION && k == "BLK:WIDE" -> v.coerceIn(-4f, 6f)
-                    storedVersion < CURRENT_CALIB_VERSION && k == "DIST:NEAR270" -> v.coerceIn(-20f, -14f)
-                    storedVersion < CURRENT_CALIB_VERSION && k == "DIST:NEAR200" -> v.coerceIn(-25f, -19f)
+                    storedVersion < CURRENT_CALIB_VERSION && k == "BLK:MINI" -> v.coerceIn(2f, 8f)
+                    storedVersion < CURRENT_CALIB_VERSION && k == "BLK:NARROW" -> v.coerceIn(-10f, 4f)
+                    storedVersion < CURRENT_CALIB_VERSION && k == "BLK:WIDE" -> v.coerceIn(-4f, 8f)
+                    storedVersion < CURRENT_CALIB_VERSION && k == "DIST:NEAR270" -> v.coerceIn(-10f, -4f)
+                    storedVersion < CURRENT_CALIB_VERSION && k == "DIST:NEAR200" -> v.coerceIn(-18f, -13f)
                     storedVersion < CURRENT_CALIB_VERSION && k.startsWith("MIST:") -> v.coerceIn(-6f, 6f)
-                    storedVersion < CURRENT_CALIB_VERSION && k == "STANCE:SIDE_BACK" -> v.coerceIn(0f, 3f)
-                    storedVersion < CURRENT_CALIB_VERSION && k == "STANCE:SIDE_FRONT" -> v.coerceIn(-3f, 0f)
+                    storedVersion < CURRENT_CALIB_VERSION && k == "STANCE:SIDE_BACK" -> v.coerceIn(0f, 6f)
+                    storedVersion < CURRENT_CALIB_VERSION && k == "STANCE:SIDE_FRONT" -> v.coerceIn(-4f, 0f)
                     storedVersion < CURRENT_CALIB_VERSION && k.startsWith("STANCE:") -> v.coerceIn(-4f, 4f)
                     k == "BLK:NARROW" -> v.coerceIn(-24f, 6f)
                     k == "DIST:NEAR270" -> v.coerceIn(-24f, 8f)
@@ -107,10 +109,10 @@ class BotPreferencesRepository(private val context: Context) {
         }
         if (storedVersion < CURRENT_CALIB_VERSION || !prefs.contains(Keys.ADAPTIVE_BIASES_JSON)) {
             if (storedVersion < CURRENT_CALIB_VERSION) {
-                biases["DIST:NEAR200"] = (biases["DIST:NEAR200"] ?: -23f).coerceIn(-25f, -19f)
-                biases["DIST:NEAR270"] = (biases["DIST:NEAR270"] ?: -18f).coerceIn(-20f, -14f)
-                biases["STANCE:SIDE_BACK"] = (biases["STANCE:SIDE_BACK"] ?: 2f).coerceIn(0f, 3f)
-                biases["STANCE:SIDE_FRONT"] = (biases["STANCE:SIDE_FRONT"] ?: -2f).coerceIn(-3f, 0f)
+                biases["DIST:NEAR200"] = (biases["DIST:NEAR200"] ?: -16f).coerceIn(-18f, -13f)
+                biases["DIST:NEAR270"] = (biases["DIST:NEAR270"] ?: -8f).coerceIn(-10f, -4f)
+                biases["STANCE:SIDE_BACK"] = (biases["STANCE:SIDE_BACK"] ?: 4f).coerceIn(0f, 6f)
+                biases["STANCE:SIDE_FRONT"] = (biases["STANCE:SIDE_FRONT"] ?: -2f).coerceIn(-4f, 0f)
             } else {
                 seededBiases.forEach { (k, v) -> biases.putIfAbsent(k, v) }
             }
@@ -118,7 +120,7 @@ class BotPreferencesRepository(private val context: Context) {
         val rawK = prefs[Keys.K_FACTOR] ?: defaults.kFactor
         val rawB = prefs[Keys.OFFSET_MS] ?: defaults.offsetMs
         val migratedK = if (storedVersion < CURRENT_CALIB_VERSION) {
-            rawK.coerceIn(1.385f, 1.391f)
+            rawK.coerceIn(1.384f, 1.391f)
         } else {
             rawK
         }

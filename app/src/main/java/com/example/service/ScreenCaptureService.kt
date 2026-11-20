@@ -68,6 +68,10 @@ class ScreenCaptureService : Service() {
     private var manualConfigEpoch = 0L
     @Volatile
     private var lastTouchdownSnapshot: BlockVisionAnalyzer.UpperRoiSnapshot? = null
+    @Volatile
+    private var lastSettledBlockWidthPx: Float? = null
+    @Volatile
+    private var lastSettledPreview: VisionAnalysisResult? = null
     private var consecutiveJitterRetries = 0
 
     private var screenWidth = 1080
@@ -329,22 +333,40 @@ class ScreenCaptureService : Service() {
         val config = AutomationBridge.currentConfig.value
         val overlayRect = AutomationBridge.overlayBounds.value
 
+        val expectedSourceWidth = lastSettledBlockWidthPx
+        var usedFreshInitial = false
         var initialPair = analyzeLatestFrameWithDiag(
             config = config,
             overlayRect = overlayRect,
-            allowCached = true,
-            touchdownSnapshot = lastTouchdownSnapshot
+            allowCached = false,
+            touchdownSnapshot = lastTouchdownSnapshot,
+            expectedSourceWidthPx = expectedSourceWidth
         )
-        if (initialPair == null) {
-            delay(65L)
+        if (initialPair != null) {
+            usedFreshInitial = true
+        } else {
+            delay(45L)
             initialPair = analyzeLatestFrameWithDiag(
                 config = config,
                 overlayRect = overlayRect,
-                allowCached = true,
-                touchdownSnapshot = lastTouchdownSnapshot
+                allowCached = false,
+                touchdownSnapshot = lastTouchdownSnapshot,
+                expectedSourceWidthPx = expectedSourceWidth
             )
+            if (initialPair != null) {
+                usedFreshInitial = true
+            } else {
+                initialPair = analyzeLatestFrameWithDiag(
+                    config = config,
+                    overlayRect = overlayRect,
+                    allowCached = true,
+                    touchdownSnapshot = lastTouchdownSnapshot,
+                    expectedSourceWidthPx = expectedSourceWidth
+                )
+            }
         }
         if (initialPair == null) {
+            lastSettledPreview = null
             AutomationBridge.updateVisionDebugStatus(
                 VisionDebugStatus(
                     phase = "NO_FRAME",
@@ -352,28 +374,46 @@ class ScreenCaptureService : Service() {
                     showTargetHighlight = false
                 )
             )
-            return 220L
+            return 180L
         }
 
         var stableResult = initialPair.first
         var stableDiag = initialPair.second
 
         val startManualEpoch = manualConfigEpoch
+        var lockedStable = false
 
         if (requireStability && AutomationBridge.isAutoLoopActive.value) {
+            val prevSettled = lastSettledPreview
+            if (usedFreshInitial &&
+                prevSettled != null &&
+                prevSettled.pawnFound && stableResult.pawnFound &&
+                prevSettled.blockFound && stableResult.blockFound
+            ) {
+                val initDistDrift = abs(prevSettled.rawDistancePx - stableResult.rawDistancePx)
+                val initPawnDrift = maxOf(
+                    abs(prevSettled.pawnCenterX - stableResult.pawnCenterX),
+                    abs(prevSettled.pawnBaseY - stableResult.pawnBaseY)
+                )
+                val initWidthDrift = abs((prevSettled.blockBounds?.widthPx ?: 0f) - (stableResult.blockBounds?.widthPx ?: 0f))
+                if (initDistDrift <= 8f && initPawnDrift <= 5f && initWidthDrift <= 14f) {
+                    lockedStable = true
+                }
+            }
+
             var checks = 0
-            var lockedStable = false
             var missingBoardStreak = if (!stableResult.pawnFound || !stableResult.blockFound) 1 else 0
             var lastDistDrift = Float.MAX_VALUE
             var lastPawnDrift = Float.MAX_VALUE
 
-            while (checks < 8 && AutomationBridge.isAutoLoopActive.value) {
-                delay(80L)
+            while (!lockedStable && checks < 10 && AutomationBridge.isAutoLoopActive.value) {
+                delay(50L)
                 val nextPair = analyzeLatestFrameWithDiag(
                     config = config,
                     overlayRect = overlayRect,
                     allowCached = true,
-                    touchdownSnapshot = lastTouchdownSnapshot
+                    touchdownSnapshot = if (checks == 0) lastTouchdownSnapshot else null,
+                    expectedSourceWidthPx = expectedSourceWidth
                 )
                 val nextResult = nextPair?.first
                 val prevW = stableResult.blockBounds?.widthPx ?: 0f
@@ -399,7 +439,7 @@ class ScreenCaptureService : Service() {
                     AutomationBridge.updateVisionDebugStatus(
                         VisionDebugStatus(
                             phase = "WAITING_STABILITY",
-                            message = "Stabilizing (${checks + 1}/8): ΔD=${lastDistDrift.roundToInt()}px ΔP=${lastPawnDrift.roundToInt()}px",
+                            message = "Stabilizing (${checks + 1}/10): ΔD=${lastDistDrift.roundToInt()}px ΔP=${lastPawnDrift.roundToInt()}px",
                             showTargetHighlight = true
                         )
                     )
@@ -425,6 +465,8 @@ class ScreenCaptureService : Service() {
                 if (!stableResult.pawnFound || !stableResult.blockFound) {
                     consecutiveJitterRetries = 0
                     lastTouchdownSnapshot = null
+                    lastSettledBlockWidthPx = null
+                    lastSettledPreview = null
                     AutomationBridge.updateAnalysis(stableResult)
                     AutomationBridge.updateTrainingBanner("Standby (waiting for game board...)")
                     AutomationBridge.updateVisionDebugStatus(
@@ -434,7 +476,7 @@ class ScreenCaptureService : Service() {
                             showTargetHighlight = false
                         )
                     )
-                    return 260L
+                    return 220L
                 }
                 if (lastPawnDrift > 6f || lastDistDrift > 11f) {
                     val minorAnimJitter = lastPawnDrift <= 18f && lastDistDrift <= 22f
@@ -448,7 +490,7 @@ class ScreenCaptureService : Service() {
                                 showTargetHighlight = true
                             )
                         )
-                        return 100L
+                        return 70L
                     }
                 }
             }
@@ -457,6 +499,7 @@ class ScreenCaptureService : Service() {
             }
         }
         lastTouchdownSnapshot = null
+        lastSettledPreview = null
 
         AutomationBridge.updateAnalysis(stableResult)
 
@@ -497,31 +540,38 @@ class ScreenCaptureService : Service() {
             AutomationBridge.updateVisionDebugStatus(
                 VisionDebugStatus(
                     phase = "HUMAN_PACING",
-                    message = "Human pace (${humanPauseMs}ms) → D=${stableResult.rawDistancePx.roundToInt()}px",
+                    message = "Pace (${humanPauseMs}ms) → D=${stableResult.rawDistancePx.roundToInt()}px",
                     showTargetHighlight = true
                 )
             )
             delay(humanPauseMs)
             if (!AutomationBridge.isAutoLoopActive.value) {
-                return 160L
+                return 120L
             }
-            // Re-verify fresh frame after waiting so we never jump using stale pre-pause geometry
-            val postPausePair = analyzeLatestFrameWithDiag(config, overlayRect, allowCached = true)
-            val postPause = postPausePair?.first
-            if (postPause == null || !postPause.pawnFound || !postPause.blockFound) {
-                return 140L
+            if (humanPauseMs > 125L || !lockedStable) {
+                // Re-verify fresh frame after longer pauses so moving blocks stay locked
+                val postPausePair = analyzeLatestFrameWithDiag(
+                    config = config,
+                    overlayRect = overlayRect,
+                    allowCached = true,
+                    expectedSourceWidthPx = expectedSourceWidth
+                )
+                val postPause = postPausePair?.first
+                if (postPause == null || !postPause.pawnFound || !postPause.blockFound) {
+                    return 110L
+                }
+                val distShift = abs(postPause.rawDistancePx - stableResult.rawDistancePx)
+                val pawnShift = abs(postPause.pawnCenterX - stableResult.pawnCenterX)
+                val largeShift = distShift > 26f || pawnShift > 16f
+                if (largeShift || ((distShift > 15f || pawnShift > 10f) && consecutiveJitterRetries < 2)) {
+                    consecutiveJitterRetries = if (!largeShift) consecutiveJitterRetries + 1 else 0
+                    AutomationBridge.updateAnalysis(postPause)
+                    return 65L
+                }
+                stableResult = postPause
+                stableDiag = postPausePair.second
+                AutomationBridge.updateAnalysis(stableResult)
             }
-            val distShift = abs(postPause.rawDistancePx - stableResult.rawDistancePx)
-            val pawnShift = abs(postPause.pawnCenterX - stableResult.pawnCenterX)
-            val largeShift = distShift > 26f || pawnShift > 16f
-            if (largeShift || ((distShift > 12f || pawnShift > 8f) && consecutiveJitterRetries < 2)) {
-                consecutiveJitterRetries = if (!largeShift) consecutiveJitterRetries + 1 else 0
-                AutomationBridge.updateAnalysis(postPause)
-                return 90L
-            }
-            stableResult = postPause
-            stableDiag = postPausePair.second
-            AutomationBridge.updateAnalysis(stableResult)
         }
         consecutiveJitterRetries = 0
 
@@ -641,9 +691,10 @@ class ScreenCaptureService : Service() {
         }
 
         // Wait remaining cooldown for camera pan / Game Over popup to finish settling
-        val cooldownJitter = if (config.humanizeTiming) kotlin.random.Random.nextLong(-45L, 165L) else 0L
+        val cooldownJitter = if (config.humanizeTiming) kotlin.random.Random.nextLong(-25L, 46L) else 0L
+        val longPanBonus = ((holdMs - 650L).coerceAtLeast(0L) * 0.25f).roundToLong().coerceAtMost(80L)
         val elapsedWaitMs = burst1DelayMs + 55L
-        val remainingCooldown = (config.jumpCooldownMs - elapsedWaitMs + cooldownJitter).coerceAtLeast(320L)
+        val remainingCooldown = (config.jumpCooldownMs + longPanBonus - elapsedWaitMs + cooldownJitter).coerceAtLeast(280L)
         delay(remainingCooldown)
         val expectedLandedWidth = stableResult.blockBounds?.widthPx
         val postSettled = analyzeLatestFrameWithDiag(
@@ -668,6 +719,22 @@ class ScreenCaptureService : Service() {
         }
 
         val outcome = JumpTrainer.classifyOutcome(stableResult, landingRatio, postSettled, scoreDelta)
+        if (outcome != JumpOutcome.OUT_SHORT &&
+            outcome != JumpOutcome.OUT_OVERSHOOT &&
+            outcome != JumpOutcome.OUT_UNKNOWN &&
+            outcome != JumpOutcome.SHORT &&
+            outcome != JumpOutcome.UNKNOWN &&
+            postSettled != null &&
+            postSettled.pawnFound
+        ) {
+            lastSettledBlockWidthPx = expectedLandedWidth
+            lastSettledPreview = if (postSettled.blockFound) postSettled else null
+        } else {
+            if (outcome != JumpOutcome.SHORT) {
+                lastSettledBlockWidthPx = null
+            }
+            lastSettledPreview = null
+        }
         val existingHistory = AutomationBridge.trainingRecords.value
         val activeCfg = AutomationBridge.currentConfig.value
         val userOverrodeMidJump = manualConfigEpoch != startManualEpoch
@@ -752,11 +819,13 @@ class ScreenCaptureService : Service() {
         // Keep Auto-Loop ARMED across Game Over so user just taps Play Again and self-training continues!
         if (outcome == JumpOutcome.OUT_SHORT || outcome == JumpOutcome.OUT_OVERSHOOT || outcome == JumpOutcome.OUT_UNKNOWN) {
             lastTouchdownSnapshot = null
+            lastSettledBlockWidthPx = null
+            lastSettledPreview = null
             AutomationBridge.updateTrainingBanner("OUT ($ratioSummary) · Armed for Replay")
             AutomationBridge.appendLog("Round ended ($outcome) — Auto stays armed; tap Replay in game to continue")
         }
 
-        return 40L
+        return 15L
     }
 
     private fun analyzeLatestFrameWithDiag(
@@ -899,6 +968,8 @@ class ScreenCaptureService : Service() {
 
     private fun stopCaptureResources() {
         lastTouchdownSnapshot = null
+        lastSettledBlockWidthPx = null
+        lastSettledPreview = null
         loopJob?.cancel()
         stepJob?.cancel()
         feedbackJob?.cancel()
@@ -928,10 +999,10 @@ class ScreenCaptureService : Service() {
         private const val NOTIFICATION_ID = 4102
 
         /**
-         * Natural human pre-jump reaction distribution:
-         * ~38% quick confident hops (55..210ms),
-         * ~44% standard human rhythm (240..590ms),
-         * ~18% occasional brief aiming/thinking pauses (680..1280ms).
+         * Brisk, natural human pre-jump reaction distribution:
+         * ~55% quick confident hops (30..105ms),
+         * ~35% smooth human rhythm (115..240ms),
+         * ~10% brief aiming check (260..420ms).
          */
         fun computeHumanPreJumpPauseMs(
             tierSample: Float = kotlin.random.Random.nextFloat(),
@@ -939,9 +1010,9 @@ class ScreenCaptureService : Service() {
         ): Long {
             val u = withinTierSample.coerceIn(0f, 1f)
             return when {
-                tierSample < 0.38f -> (55f + u * 155f).roundToLong()
-                tierSample < 0.82f -> (240f + u * 350f).roundToLong()
-                else -> (680f + u * 600f).roundToLong()
+                tierSample < 0.55f -> (30f + u * 75f).roundToLong()
+                tierSample < 0.90f -> (115f + u * 125f).roundToLong()
+                else -> (260f + u * 160f).roundToLong()
             }
         }
 

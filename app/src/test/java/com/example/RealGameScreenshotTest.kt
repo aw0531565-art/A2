@@ -145,11 +145,11 @@ class RealGameScreenshotTest {
     @Test
     fun `human pre-jump pacing produces fast medium and thoughtful tiers`() {
         val fast = com.example.service.ScreenCaptureService.computeHumanPreJumpPauseMs(0.10f, 0.50f)
-        val medium = com.example.service.ScreenCaptureService.computeHumanPreJumpPauseMs(0.55f, 0.50f)
-        val slow = com.example.service.ScreenCaptureService.computeHumanPreJumpPauseMs(0.92f, 0.50f)
-        assertTrue("Fast tier should be in 55..210ms, got $fast", fast in 55L..210L)
-        assertTrue("Medium tier should be in 240..590ms, got $medium", medium in 240L..590L)
-        assertTrue("Thoughtful pause tier should be in 680..1280ms, got $slow", slow in 680L..1280L)
+        val medium = com.example.service.ScreenCaptureService.computeHumanPreJumpPauseMs(0.70f, 0.50f)
+        val slow = com.example.service.ScreenCaptureService.computeHumanPreJumpPauseMs(0.95f, 0.50f)
+        assertTrue("Fast tier should be in 30..105ms, got $fast", fast in 30L..105L)
+        assertTrue("Medium tier should be in 115..240ms, got $medium", medium in 115L..240L)
+        assertTrue("Thoughtful pause tier should be in 260..420ms, got $slow", slow in 260L..420L)
     }
 
     @Test
