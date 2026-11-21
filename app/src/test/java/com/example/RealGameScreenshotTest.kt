@@ -102,6 +102,18 @@ class RealGameScreenshotTest {
             } else {
                 assertTrue("Cup shot ${idx + 4}: cup (${blk.center.x}) must be right of pawn (${res.pawnCenterX})", blk.center.x > res.pawnCenterX + 100f)
             }
+            if (idx == 1 || idx == 2) {
+                assertTrue(
+                    "Cup shot ${idx + 4}: sourceCenterX (${res.sourceCenterX}) must stay centered near pawn (${res.pawnCenterX}), got width=${res.sourceWidthPx}",
+                    kotlin.math.abs(res.sourceCenterX - res.pawnCenterX) <= 18f
+                )
+            }
+            if (idx == 2) {
+                assertTrue(
+                    "Cup shot 6: sourceLeftX (${res.sourceLeftX}) must lock on real left wall (< 190), not stop at pawn shadow 224",
+                    res.sourceLeftX in 95f..190f
+                )
+            }
         }
     }
 
@@ -186,6 +198,10 @@ class RealGameScreenshotTest {
         assertTrue("Teal-white cylinder should be detected on 573 shot: ${res.statusMessage}", res.blockFound)
         val bx = res.blockBounds?.center?.x ?: 0f
         assertTrue("Cylinder center X should be around 490, got $bx", bx in 445f..540f)
+        assertTrue(
+            "573 sourceCenterX (${res.sourceCenterX}) should stay centered near pawn (${res.pawnCenterX})",
+            kotlin.math.abs(res.sourceCenterX - res.pawnCenterX) <= 18f
+        )
     }
 
     @Test
@@ -231,6 +247,9 @@ class RealGameScreenshotTest {
             else if ((res.blockBounds?.center?.x ?: 0f) !in c.blockX) failures.add("${c.score}: blockX=${res.blockBounds?.center?.x} not in ${c.blockX}")
             if (c.score == 570 && (res.blockBounds?.widthPx ?: 0f) > 278f) {
                 failures.add("570: target width bled into source (${res.blockBounds?.widthPx})")
+            }
+            if (c.score == 412 && kotlin.math.abs(res.sourceCenterX - res.pawnCenterX) > 18f) {
+                failures.add("412: sourceCenterX (${res.sourceCenterX}) drifted from centered pawn (${res.pawnCenterX})")
             }
         }
         assertTrue("Failures: $failures", failures.isEmpty())

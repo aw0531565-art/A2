@@ -76,17 +76,27 @@ object JumpTrainer {
         val biases = config.adaptiveBiasesMs
         if (biases.isEmpty()) return 0L
 
-        val blkBias = if (targetBlockProfile == "MEDIUM" || targetBlockProfile.isBlank()) {
+        val rawBlkBias = if (targetBlockProfile == "MEDIUM" || targetBlockProfile.isBlank()) {
             0f
         } else {
             biases[profileKey(targetBlockProfile)] ?: 0f
+        }
+        val blkBias = if (targetBlockProfile == "MINI" && normalizedDistancePx < 420f) {
+            rawBlkBias * (normalizedDistancePx / 420f).coerceIn(0.45f, 1.0f)
+        } else {
+            rawBlkBias
         }
         val sigKey = signatureKey(targetBlockProfile, targetColorGroup)
         val sigBias = if (sigKey.isNotEmpty()) (biases[sigKey] ?: 0f) * 0.80f else 0f
         val stKey = stanceKey(pawnStance)
         val stanceBias = if (stKey.isNotEmpty()) (biases[stKey] ?: 0f) else 0f
         val distBias = computeDistBandAdjustmentMs(biases, normalizedDistancePx)
-        val mistBias = biases[mistakeKey(targetBlockProfile, pawnStance, normalizedDistancePx)] ?: 0f
+        val rawMistBias = biases[mistakeKey(targetBlockProfile, pawnStance, normalizedDistancePx)] ?: 0f
+        val mistBias = if (targetBlockProfile == "MINI" && blkBias >= 18f && rawMistBias > 0f) {
+            rawMistBias * 0.55f
+        } else {
+            rawMistBias
+        }
 
         return (blkBias + sigBias + stanceBias + distBias + mistBias)
             .roundToInt()
@@ -421,23 +431,33 @@ object JumpTrainer {
                         note = String.format(Locale.US, "Out-short recovery (+%.3f k)", pull)
                     }
                     else -> {
-                        val nearRim = landingRatio != null && landingRatio in 0.96f..1.04f
-                        val rimStep = if (isMiniBlock) 14f else 18f
-                        // Never repeat the exact same failed hold: prefer pre-fall ratio direction, then stance / history
-                        val guardDelta = when {
-                            existingMist <= -42f -> 30f // previous downward guards still missed, flip to avoid trap
-                            existingMist >= 42f -> -30f
-                            nearRim -> if ((landingRatio ?: 1f) < 1.0f) rimStep else -rimStep
-                            landingRatio != null && landingRatio < 0.97f -> 26f
-                            landingRatio != null && landingRatio > 1.03f -> -26f
-                            pawnStance == "SIDE_BACK" -> 24f
-                            pawnStance == "SIDE_FRONT" -> -24f
-                            prevSameSpot != null && prevSameSpot.holdMs >= holdMs -> -24f
-                            else -> -24f
+                        val overBoostedMini = isMiniBlock &&
+                            effK > ANCHOR_K + 0.065f &&
+                            (landingRatio == null || landingRatio in 0.91f..1.05f)
+                        if (overBoostedMini) {
+                            val trimDelta = -12f
+                            learnedErrorMs = trimDelta
+                            newK += (trimDelta * 0.25f * globalShare) / dNorm.coerceAtLeast(150f)
+                            note = String.format(Locale.US, "Mistake guard (-12ms on over-boosted MINI/%s)", pawnStance)
+                        } else {
+                            val nearRim = landingRatio != null && landingRatio in 0.96f..1.04f
+                            val rimStep = if (isMiniBlock) 14f else 18f
+                            // Never repeat the exact same failed hold: prefer pre-fall ratio direction, then stance / history
+                            val guardDelta = when {
+                                existingMist <= -42f -> 30f // previous downward guards still missed, flip to avoid trap
+                                existingMist >= 42f -> -30f
+                                nearRim -> if ((landingRatio ?: 1f) < 1.0f) rimStep else -rimStep
+                                landingRatio != null && landingRatio < 0.97f -> 26f
+                                landingRatio != null && landingRatio > 1.03f -> -26f
+                                pawnStance == "SIDE_BACK" -> 24f
+                                pawnStance == "SIDE_FRONT" -> -24f
+                                prevSameSpot != null && prevSameSpot.holdMs >= holdMs -> -24f
+                                else -> -24f
+                            }
+                            learnedErrorMs = guardDelta
+                            newK += (guardDelta * 0.25f * globalShare) / dNorm.coerceAtLeast(150f)
+                            note = String.format(Locale.US, "Mistake guard (%+.0fms on %s/%s)", guardDelta, targetProfile, pawnStance)
                         }
-                        learnedErrorMs = guardDelta
-                        newK += (guardDelta * 0.25f * globalShare) / dNorm.coerceAtLeast(150f)
-                        note = String.format(Locale.US, "Mistake guard (%+.0fms on %s/%s)", guardDelta, targetProfile, pawnStance)
                     }
                 }
             }
@@ -551,10 +571,10 @@ object JumpTrainer {
                         stKey.isNotEmpty() && pawnStance != "CENTER" -> 0.40f
                         else -> 0.60f
                     }
-                    val blkMin = if (isMiniBlock) -65f else -24f
-                    val blkMax = if (isMiniBlock) 75f else if (targetProfile == "NARROW") 6f else 14f
+                    val blkMin = if (isMiniBlock) -40f else -24f
+                    val blkMax = if (isMiniBlock) 32f else if (targetProfile == "NARROW") 6f else 14f
                     val rawBlk = (curBlk + ctxDelta * blkShare * distAtten).coerceIn(blkMin, blkMax)
-                    newBiases[pKey] = if (singlePointOffCenter && isMiniBlock && learnedErrorMs < 0f) {
+                    newBiases[pKey] = if (singlePointOffCenter && isMiniBlock && learnedErrorMs < 0f && curBlk <= 8f) {
                         rawBlk.coerceAtLeast(4f)
                     } else {
                         rawBlk
@@ -578,14 +598,15 @@ object JumpTrainer {
                 }
             }
 
+            val mistCap = if (isMiniBlock) 24f else MAX_MISTAKE_GUARD_MS
             if (isFatalOut || outcome == JumpOutcome.SHORT || outcome == JumpOutcome.PAST_CENTER) {
-                val mistDelta = if (isFatalOut) learnedErrorMs.coerceIn(-36f, 36f) else (learnedErrorMs * 0.38f)
+                val mistDelta = if (isFatalOut) learnedErrorMs.coerceIn(-mistCap, mistCap) else (learnedErrorMs * 0.38f)
                 val curMist = newBiases[mKey] ?: 0f
-                newBiases[mKey] = (curMist + mistDelta).coerceIn(-MAX_MISTAKE_GUARD_MS, MAX_MISTAKE_GUARD_MS)
+                newBiases[mKey] = (curMist + mistDelta).coerceIn(-mistCap, mistCap)
             } else if (singlePointOffCenter) {
                 val curMist = newBiases[mKey]
                 if (curMist != null && curMist * learnedErrorMs < 0f) {
-                    newBiases[mKey] = (curMist * 0.45f + learnedErrorMs * 0.65f).coerceIn(-MAX_MISTAKE_GUARD_MS, MAX_MISTAKE_GUARD_MS)
+                    newBiases[mKey] = (curMist * 0.45f + learnedErrorMs * 0.65f).coerceIn(-mistCap, mistCap)
                 }
             }
         }

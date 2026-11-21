@@ -261,7 +261,8 @@ object BlockVisionAnalyzer {
             targetCenterX = pawnCenterX,
             excludedRect = excludedRect,
             thresholdSq = translucentThresholdSq,
-            expectedSourceWidthPx = expectedSourceWidthPx
+            expectedSourceWidthPx = expectedSourceWidthPx,
+            snapEdges = config.ultraPrecisionMode
         )
 
         var block = scanForTargetBlock(
@@ -469,7 +470,8 @@ object BlockVisionAnalyzer {
             excludedRect = excludedRect,
             thresholdSq = translucentThresholdSq,
             targetBlock = block,
-            expectedSourceWidthPx = expectedSourceWidthPx
+            expectedSourceWidthPx = expectedSourceWidthPx,
+            snapEdges = config.ultraPrecisionMode
         )
 
         // Step 4: Distance & Contextual Duration Calculation
@@ -504,8 +506,8 @@ object BlockVisionAnalyzer {
             blockBounds = BlockBounds(
                 apex = PointF2D(block.apexX, blockTopY),
                 center = PointF2D(blockCenterX, blockCenterY),
-                leftEdgeX = block.widestLeftX,
-                rightEdgeX = block.widestRightX,
+                leftEdgeX = effectiveLeftX,
+                rightEdgeX = effectiveRightX,
                 topY = blockTopY,
                 bottomY = blockBottomY,
                 widthPx = blockWidthPx,
@@ -1941,7 +1943,8 @@ object BlockVisionAnalyzer {
         excludedRect: Rect?,
         thresholdSq: Int,
         targetBlock: BlockTrace? = null,
-        expectedSourceWidthPx: Float? = null
+        expectedSourceWidthPx: Float? = null,
+        snapEdges: Boolean = false
     ): SourcePlatformStance {
         val scanStartRel = (pawnBaseY - roiTop - width * 0.032f).roundToInt().coerceIn(0, roiHeight - 1)
         val scanDownFrac = if (expectedSourceWidthPx != null && expectedSourceWidthPx < width * 0.24f) 0.034f else 0.044f
@@ -1955,6 +1958,7 @@ object BlockVisionAnalyzer {
         } ?: (width * 0.235f).roundToInt()
         val bridgeHalf = max(12, (pawnWidthEstimate * 0.56f).roundToInt())
         val srcThresholdSq = max(thresholdSq, 1150)
+        val minHalfFromAnchor = max(18, (pawnWidthEstimate * 0.72f).roundToInt())
 
         val blockSideLeftX = targetBlock?.widestLeftX?.roundToInt() ?: Int.MAX_VALUE
         val blockSideRightX = targetBlock?.widestRightX?.roundToInt() ?: Int.MIN_VALUE
@@ -2048,6 +2052,9 @@ object BlockVisionAnalyzer {
                 }
             }
 
+            lx = trimSmoothSkyTail(pixels, rowOff, anchorX, lx, dir = -1, width = width, marginX = marginX, minHalfFromAnchor = minHalfFromAnchor)
+            rx = trimSmoothSkyTail(pixels, rowOff, anchorX, rx, dir = 1, width = width, marginX = marginX, minHalfFromAnchor = minHalfFromAnchor)
+
             val rowW = rx - lx
             if (rowW >= 18 &&
                 pawnCenterX in (lx - 4f)..(rx + 4f) &&
@@ -2076,16 +2083,25 @@ object BlockVisionAnalyzer {
             return SourcePlatformStance(0f, 0f, 0f, 0f, 0f, "UNKNOWN", 0f)
         }
 
+        if (snapEdges) {
+            val rowOff = bestWidestRelY.coerceIn(0, roiHeight - 1) * width
+            val snappedL = snapSubPixelEdge(pixels, rowOff, bestLeftX, width, radiusPx = 4, minPeakGrad = 42, maxShiftPx = 3.0f)
+            val snappedR = snapSubPixelEdge(pixels, rowOff, bestRightX, width, radiusPx = 4, minPeakGrad = 42, maxShiftPx = 3.0f)
+            if (snappedL != null) bestLeftX = snappedL
+            if (snappedR != null) bestRightX = snappedR
+        }
+
+        val effectiveWidthPx = (bestRightX - bestLeftX).coerceAtLeast(minSrcW.toFloat())
         val srcCenterX = (bestLeftX + bestRightX) * 0.5f
         val projectedCenterYRel = if (topSurfaceRelY < bestWidestRelY - 6) {
-            (bestWidestRelY * 0.65f) + ((topSurfaceRelY + bestWidth * 0.255f) * 0.35f)
+            (bestWidestRelY * 0.65f) + ((topSurfaceRelY + effectiveWidthPx * 0.255f) * 0.35f)
         } else {
             bestWidestRelY.toFloat()
         }
         val srcCenterY = roiTop + projectedCenterYRel
 
-        val halfW = (bestWidth * 0.5f).coerceAtLeast(30f)
-        val halfH = (bestWidth * 0.26f).coerceAtLeast(16f)
+        val halfW = (effectiveWidthPx * 0.5f).coerceAtLeast(30f)
+        val halfH = (effectiveWidthPx * 0.26f).coerceAtLeast(16f)
         val normDx = (pawnCenterX - srcCenterX) / halfW
         val normDy = (pawnBaseY - srcCenterY) / halfH
         val radialOffset = hypot(normDx, normDy).coerceIn(0f, 1.4f)
@@ -2104,10 +2120,56 @@ object BlockVisionAnalyzer {
             rightX = bestRightX,
             centerX = srcCenterX,
             centerY = srcCenterY,
-            widthPx = bestWidth.toFloat(),
+            widthPx = effectiveWidthPx,
             stance = stance,
             offsetFrac = radialOffset
         )
+    }
+
+    /**
+     * When radial center sky glow differs from margin sky enough to pass [isValidBlockPixel],
+     * outward source-platform scanning can walk smoothly into empty sky. If the outer tail has
+     * no sharp boundary at [edgeX], trim back along the smooth sky plateau to the outermost real
+     * block-to-sky edge jump.
+     */
+    private fun trimSmoothSkyTail(
+        pixels: IntArray,
+        rowOff: Int,
+        anchorX: Int,
+        edgeX: Int,
+        dir: Int,
+        width: Int,
+        marginX: Int,
+        minHalfFromAnchor: Int
+    ): Int {
+        val travel = (edgeX - anchorX) * dir
+        if (travel < minHalfFromAnchor + 10) return edgeX
+
+        val probeIn = (edgeX - 4 * dir).coerceIn(marginX, width - marginX - 1)
+        val probeOut = (edgeX + 4 * dir).coerceIn(marginX, width - marginX - 1)
+        if (colorDistSq(pixels[rowOff + probeIn], pixels[rowOff + probeOut]) >= 160) {
+            return edgeX
+        }
+
+        val tailPixel = pixels[rowOff + edgeX]
+        val minStopX = anchorX + dir * minHalfFromAnchor
+        var tx = edgeX - dir
+        var stepsBack = 1
+        while (stepsBack < travel - minHalfFromAnchor) {
+            val inner = (tx - 4 * dir).coerceIn(marginX, width - marginX - 1)
+            val outer = (tx + 4 * dir).coerceIn(marginX, width - marginX - 1)
+            val edgeJump = colorDistSq(pixels[rowOff + inner], pixels[rowOff + outer])
+            if (stepsBack >= 6 && edgeJump >= 140) {
+                val wallVsTail = colorDistSq(pixels[rowOff + inner], tailPixel)
+                if (wallVsTail >= 160) {
+                    return tx
+                }
+            }
+            if (tx == minStopX) break
+            tx -= dir
+            stepsBack++
+        }
+        return edgeX
     }
 
     private fun isExcluded(x: Int, absY: Int, excludedRect: Rect?): Boolean {

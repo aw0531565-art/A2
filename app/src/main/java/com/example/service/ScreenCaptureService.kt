@@ -741,7 +741,7 @@ class ScreenCaptureService : Service() {
         clearCachedFrame()
 
         // Sample right at touchdown before camera pan starts (with 55ms follow-up burst)
-        val burst1DelayMs = (392L + (holdMs * 0.018f).roundToLong()).coerceIn(396L, 414L)
+        val burst1DelayMs = (396L + (holdMs * 0.022f).roundToLong()).coerceIn(400L, 424L)
         delay(burst1DelayMs)
         val burst1 = analyzeLatestFrameWithDiag(config, overlayRect, allowCached = false)?.first
         val r1 = JumpTrainer.computeLandingRatio(stableResult, burst1)

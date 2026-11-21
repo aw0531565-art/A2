@@ -864,4 +864,56 @@ class JumpTrainerTest {
         val expectedNorm = consensus.rawDistancePx * (1080f / 720f)
         assertEquals(expectedNorm, consensus.normalizedDistancePx, 0.1f)
     }
+
+    @Test
+    fun `MINI bias scales down on short hops, damps positive MIST stacking, and guards over-boosted OUT_UNKNOWN`() {
+        val cfg = BotConfig(
+            kFactor = 1.389f,
+            offsetMs = 32f,
+            autoTrainEnabled = true,
+            adaptiveBiasesMs = mapOf(
+                "BLK:MINI" to 32f,
+                "MIST:MINI:SIDE_EDGE:d600" to 24f
+            )
+        )
+
+        // 1. Short MINI hop (dNorm=258): BLK:MINI scales down instead of blasting flat +32ms
+        val shortAdj = JumpTrainer.computeContextAdjustmentMs(cfg, 258f, "MINI", "WHITE", "CENTER")
+        assertTrue("Short n=258 MINI bias should scale down (<= 22ms), got $shortAdj", shortAdj in 14L..22L)
+
+        // 2. Long MINI with BLK:MINI (+32) + MIST (+24) damps MIST*0.55 so total doesn't explode past 46ms
+        val longStackedAdj = JumpTrainer.computeContextAdjustmentMs(cfg, 598f, "MINI", "PINK", "SIDE_EDGE")
+        assertTrue("Stacked MINI+MIST should damp positive MIST (<= 46ms), got $longStackedAdj", longStackedAdj in 40L..46L)
+
+        // 3. Reproduces #61: OUT_UNKNOWN with effK = 886/598 = 1.482 > ANCHOR_K+0.065 and r=0.94 must trim -12ms, not +26ms
+        val (after61, note61) = JumpTrainer.applyOnlineUpdate(
+            config = cfg,
+            dNorm = 598f,
+            holdMs = 886L,
+            outcome = JumpOutcome.OUT_UNKNOWN,
+            landingRatio = 0.94f,
+            history = emptyList(),
+            targetProfile = "MINI",
+            targetColorGroup = "PINK",
+            pawnStance = "SIDE_EDGE"
+        )
+        assertTrue("Over-boosted MINI OUT_UNKNOWN must trim downward ($note61)", note61.contains("-12ms on over-boosted MINI"))
+        assertTrue("BLK:MINI (+32) must trim down after over-boosted miss, got ${after61.adaptiveBiasesMs["BLK:MINI"]}", (after61.adaptiveBiasesMs["BLK:MINI"] ?: 99f) < 32f)
+
+        // 4. Inflated BLK:MINI (+32f) trims down cleanly on +1pt r=1.04 overshoot
+        val (trimmedMini, trimNote) = JumpTrainer.applyOnlineUpdate(
+            config = cfg,
+            dNorm = 543f,
+            holdMs = 817L,
+            outcome = JumpOutcome.CENTER,
+            landingRatio = 1.04f,
+            history = emptyList(),
+            targetProfile = "MINI",
+            targetColorGroup = "CYAN",
+            pawnStance = "CENTER",
+            scoreDelta = 1
+        )
+        val miniAfter = trimmedMini.adaptiveBiasesMs["BLK:MINI"] ?: 0f
+        assertTrue("Inflated BLK:MINI (32f) should trim down on +1pt overshoot ($trimNote), got $miniAfter", miniAfter in 20f..30f)
+    }
 }
